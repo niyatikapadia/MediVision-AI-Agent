@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  medivision:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./data:/app/data          # mount sample data
+      - ./models:/app/models      # mount model weights
+      - ./output:/app/output      # persist reports
+    restart: unless-stopped
+
+  # Optional: local LLM via Ollama (removes API key requirement)
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    profiles:
+      - local-llm   # only starts with: docker compose --profile local-llm up
+
+volumes:
+  ollama_models:
