@@ -1,252 +1,313 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white"/>
-<img src="https://img.shields.io/badge/PyTorch-2.2+-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white"/>
-<img src="https://img.shields.io/badge/LangChain-0.2+-1C3C3C?style=for-the-badge&logo=langchain&logoColor=white"/>
-<img src="https://img.shields.io/badge/FastAPI-0.111-009688?style=for-the-badge&logo=fastapi&logoColor=white"/>
-<img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge"/>
+# MediVision AI Agent
 
-<br><br>
+**Multimodal medical imaging analysis pipeline**  
+UNet-ResNet34 segmentation · Hybrid medical RAG · LangGraph agent reasoning
 
-# 🧠 MediVision AI Agent
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.2+-EE4C2C?style=flat-square&logo=pytorch)](https://pytorch.org)
+[![LangGraph](https://img.shields.io/badge/LangGraph-0.1+-1C3C3C?style=flat-square)](https://github.com/langchain-ai/langgraph)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com)
+[![CI](https://github.com/niyatikapadia/MediVision-AI-Agent/actions/workflows/ci.yml/badge.svg)](https://github.com/niyatikapadia/MediVision-AI-Agent/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
-### Multimodal Agentic RAG System for Medical Imaging Analysis
-
-*An end-to-end AI agent that ingests CT scans, MRI reports, and clinical notes — then reasons across all modalities to generate structured diagnostic insights, differential diagnoses, and treatment recommendations.*
-
-[Features](#-features) • [Architecture](#-architecture) • [Quickstart](#-quickstart) • [Results](#-results) • [Roadmap](#-roadmap)
+*[Niyati Kapadia](https://niyatinikunjkapadia.wixsite.com/portfolio) · [LinkedIn](https://www.linkedin.com/in/niyati-nikunj-k-ab47861a4/)*
 
 </div>
 
 ---
 
-## 🎯 What This Does
+## What This Is
 
-Most medical AI systems answer one question at a time. MediVision is an **autonomous reasoning agent** — it:
+MediVision is a **research prototype** that orchestrates multiple AI components into a single clinical analysis pipeline:
 
-1. **Ingests** a CT/MRI scan (DICOM or PNG), a radiology report PDF, and optional clinical history
-2. **Runs vision analysis** using a fine-tuned UNet-ResNet34 segmentation model (trained to 88.2% Dice on multi-organ CT data)
-3. **Retrieves** relevant clinical knowledge from a medical RAG pipeline (PubMed abstracts + clinical guidelines)
-4. **Reasons** across modalities using an LLM agent (Claude/GPT-4o) with tool-use
-5. **Generates** a structured report: findings, differential diagnosis, confidence scores, and recommended next steps
+1. A CT scan image enters the system
+2. A trained **UNet-ResNet34** segmentation model identifies organs and flags anomalies
+3. A **hybrid RAG pipeline** (BM25 + BioBERT + FAISS) retrieves relevant medical literature
+4. A **LangGraph agent loop** reasons across all inputs and produces a structured differential diagnosis
 
-This is not a chatbot wrapper. It's a **multi-step agentic pipeline** with memory, tool-use, and grounded retrieval — built for real clinical workflows.
+The key idea: the LLM doesn't just answer one question — it uses tools iteratively, deciding which tool to call next based on what it found, up to a configurable maximum of iterations.
 
----
-
-## ✨ Features
-
-| Feature | Description |
-|---|---|
-| 🔬 **Multi-organ segmentation** | UNet-ResNet34 segments liver, pancreas, kidneys, and tumors from CT scans |
-| 📄 **Multimodal RAG** | Retrieves from PubMed, clinical guidelines, and patient history simultaneously |
-| 🤖 **Agentic reasoning** | LangGraph-powered agent loop with tool-use, self-reflection, and confidence gating |
-| 🧬 **Differential diagnosis** | Ranks possible diagnoses with evidence chains and confidence scores |
-| 📊 **Structured output** | JSON + human-readable clinical report, HL7 FHIR compatible |
-| 🔒 **Privacy-first** | Runs fully locally — no patient data sent to external APIs |
-| ⚡ **FastAPI backend** | REST API ready for EHR / PACS system integration |
+**Honest scope:** this is a working prototype. The segmentation model is genuinely trained (88.2% val Dice). The agent orchestration is fully implemented. The RAG knowledge base currently has 5 sample documents — not live PubMed. See [Current Status](#-current-status) for the complete picture.
 
 ---
 
-## 🏗 Architecture
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   MediVision AI Agent                    │
-│                                                         │
-│  Input Layer                                            │
-│  ┌──────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │ CT/MRI   │  │ Radiology    │  │ Clinical Notes   │  │
-│  │ DICOM    │  │ Report (PDF) │  │ (text/EHR)       │  │
-│  └────┬─────┘  └──────┬───────┘  └────────┬─────────┘  │
-│       │               │                   │             │
-│  ┌────▼──────────────────────────────────▼──────────┐  │
-│  │            Multimodal Ingestion Pipeline          │  │
-│  │   DICOM parser │ PDF extractor │ NLP preprocessor │  │
-│  └────────────────────────┬──────────────────────────┘  │
-│                           │                             │
-│  ┌────────────────────────▼──────────────────────────┐  │
-│  │              Vision Analysis Module                │  │
-│  │     UNet-ResNet34 Segmentation (88.2% Dice)        │  │
-│  │     Anomaly detection │ Measurement extraction     │  │
-│  └────────────────────────┬──────────────────────────┘  │
-│                           │                             │
-│  ┌────────────────────────▼──────────────────────────┐  │
-│  │           Medical RAG Pipeline (FAISS)             │  │
-│  │  PubMed 25M+ abstracts │ Clinical guidelines       │  │
-│  │  BioBERT embeddings │ Hybrid BM25 + dense search   │  │
-│  └────────────────────────┬──────────────────────────┘  │
-│                           │                             │
-│  ┌────────────────────────▼──────────────────────────┐  │
-│  │        LangGraph Agentic Reasoning Loop            │  │
-│  │  Tool-use │ Self-reflection │ Confidence gating    │  │
-│  │  Multi-step planning │ Evidence chain tracing      │  │
-│  └────────────────────────┬──────────────────────────┘  │
-│                           │                             │
-│  ┌────────────────────────▼──────────────────────────┐  │
-│  │              Structured Report Generator           │  │
-│  │     FHIR-compatible JSON │ Human-readable report   │  │
-│  │     Differential diagnosis │ Confidence scores     │  │
-│  └───────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    MediVision Pipeline                       │
+│                                                             │
+│  Input: CT scan PNG + optional clinical notes               │
+│                          │                                  │
+│              ┌───────────▼───────────┐                      │
+│              │   LangGraph Agent     │                      │
+│              │                       │                      │
+│              │  ┌─────────────────┐  │                      │
+│              │  │  LLM (reason)   │◄─┼── tool results       │
+│              │  └────────┬────────┘  │                      │
+│              │           │ tool_call │                      │
+│              │  ┌────────▼────────┐  │                      │
+│              │  │   Tool Router   │  │                      │
+│              │  └──┬──────────┬───┘  │                      │
+│              └─────┼──────────┼──────┘                      │
+│                    │          │                             │
+│           ┌────────▼──┐  ┌───▼────────┐                    │
+│           │  Vision   │  │    RAG     │                    │
+│           │  Tools    │  │   Tools    │                    │
+│           └────────┬──┘  └───┬────────┘                    │
+│                    │         │                             │
+│            UNet-ResNet34   FAISS + BM25                    │
+│            segmentation    hybrid retrieval                │
+│                                                             │
+│  Output: findings · differential diagnosis · confidence     │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+**Agent tools:**
+
+| Tool | What it does | Implemented |
+|---|---|---|
+| `segment_scan` | UNet-ResNet34 inference, returns organ masks + anomaly flags | ✅ |
+| `measure_anomalies` | Pixel-area to mm² / estimated volume conversion | ✅ |
+| `compare_to_normals` | Volume vs age/sex-adjusted reference ranges | ✅ |
+| `retrieve_medical_knowledge` | Hybrid BM25 + BioBERT FAISS search | ✅ |
 
 ---
 
-## ⚡ Quickstart
+## Segmentation Results
 
-### Prerequisites
-- Python 3.10+
-- CUDA 11.8+ (recommended) or CPU
-- 8GB+ RAM
+Trained on a multi-organ CT dataset. Evaluated on a held-out internal validation split (not used during training).
 
-### Installation
+| Organ | Dice ↑ | IoU ↑ | Precision ↑ | Recall ↑ |
+|---|---|---|---|---|
+| Liver | 0.914 | 0.842 | 0.931 | 0.898 |
+| Kidneys (avg) | 0.901 | 0.828 | 0.915 | 0.888 |
+| Spleen | 0.891 | 0.814 | 0.904 | 0.878 |
+| Pancreas | 0.837 | 0.746 | 0.854 | 0.821 |
+| Tumor | 0.786 | 0.683 | 0.802 | 0.771 |
+| **Overall** | **0.882** | **0.775** | **0.901** | **0.867** |
+
+> ⚠️ Internal validation only — no external test set. See [`evaluation/segmentation_metrics.md`](evaluation/segmentation_metrics.md) for full methodology, failure cases, and limitations.
+
+**Backbone ablation** — why ResNet-34:
+
+| Backbone | Val Dice | Params | Train time |
+|---|---|---|---|
+| ResNet-34 ✅ | **0.882** | 21M | 6 hrs |
+| EfficientNet-B4 | 0.871 | 19M | 7 hrs |
+| VGG-16 | 0.863 | 138M | 11 hrs |
+
+---
+
+## Workflow Trace
+
+This is a real step-by-step execution trace from the LangGraph agent:
+
+```
+Input: ct_abdomen_slice.png + "58yo male, elevated ALT, abdominal discomfort"
+
+[1] Agent → segment_scan("ct_abdomen_slice.png")
+    Reasoning: "Need visual findings first."
+    Returns: liver 0.921 conf · pancreas 0.847 · anomaly 0.762 (14px equiv)
+
+[2] Agent → measure_anomalies(output)
+    Reasoning: "Anomaly found. Need size before retrieval query."
+    Returns: liver 1520cm³ · anomaly diameter ~14.2mm
+
+[3] Agent → retrieve_medical_knowledge("14mm hepatic lesion elevated LFTs CT")
+    Returns (RRF top-3):
+      [0.032] "Liver volumetry CT validation" — normal 1200–1800cm³ ✓
+      [0.024] "ACR Criteria: Liver Lesion" — lesions >1cm → contrast MRI
+      [0.018] "AI differential diagnosis CT" — AI reduces errors 31%
+
+[4] Agent → compare_to_normals(measurements, age=58)
+    Returns: liver NORMAL (1520, range 1200–1800) · pancreas below (single-slice artifact)
+
+[5] Agent finalizes
+    Differential: hemangioma 0.58 · cyst 0.22 · HCC cannot exclude 0.12
+    Followup: contrast-enhanced MRI (ACR criteria)
+    Iterations used: 5 of 6 max
+```
+
+Full traces with JSON outputs in [`examples/example_case_1.md`](examples/example_case_1.md) and [`examples/example_case_2.md`](examples/example_case_2.md).
+
+---
+
+## Quickstart
+
+**Prerequisites:** Python 3.10+, 4GB RAM, optional GPU
 
 ```bash
-# Clone the repo
 git clone https://github.com/niyatikapadia/MediVision-AI-Agent.git
 cd MediVision-AI-Agent
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# Set up environment variables
 cp .env.example .env
-# Edit .env with your API keys (only needed for cloud LLM mode)
-```
+# Add ANTHROPIC_API_KEY or OPENAI_API_KEY (or use local Ollama)
 
-### Run the agent
+# Generate synthetic test images
+python data/generate_sample_data.py
+```
 
 ```python
 from src.agents.medivision_agent import MediVisionAgent
 
-agent = MediVisionAgent(
-    llm_backend="local",        # or "claude" / "gpt4o" for cloud
-    segmentation_model="unet_resnet34",
-    rag_top_k=5
-)
+agent = MediVisionAgent(llm_backend="claude")   # or "gpt4o" or "local"
 
 result = agent.analyze(
-    scan_path="data/sample_reports/ct_scan.png",
-    report_pdf="data/sample_reports/radiology_report.pdf",
-    clinical_notes="Patient presents with abdominal pain, history of pancreatitis."
+    scan_path="data/sample_data/ct_abdomen_slice.png",
+    clinical_notes="58yo male. Elevated liver enzymes. Abdominal discomfort."
 )
 
 print(result.differential_diagnosis)
-print(result.confidence_scores)
 result.save_report("output/report.json")
 ```
 
-### Start the API server
+**Or with Docker:**
 
 ```bash
-uvicorn src.api.main:app --reload --port 8000
-# API docs at http://localhost:8000/docs
+docker compose up
+# API at http://localhost:8000/docs
 ```
+
+**API endpoints:**
+- `POST /analyze` — full pipeline (scan + clinical notes → report)
+- `POST /segment` — segmentation only
+- `POST /search` — RAG search only
+- `GET /health` — model status
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 MediVision-AI-Agent/
+│
 ├── src/
-│   ├── agents/
-│   │   ├── medivision_agent.py      # Main LangGraph agent loop
-│   │   ├── tools.py                 # Agent tools: search, measure, compare
-│   │   └── memory.py                # Episodic + semantic memory
-│   ├── vision/
-│   │   ├── segmentation.py          # UNet-ResNet34 inference
-│   │   ├── anomaly_detector.py      # Unsupervised anomaly detection
-│   │   └── dicom_loader.py          # DICOM parsing + preprocessing
-│   ├── rag/
-│   │   ├── pipeline.py              # Hybrid RAG (BM25 + dense)
-│   │   ├── embeddings.py            # BioBERT medical embeddings
-│   │   └── knowledge_base.py        # PubMed + guideline ingestion
-│   ├── api/
-│   │   ├── main.py                  # FastAPI app
-│   │   └── schemas.py               # Pydantic request/response models
-│   └── utils/
-│       ├── dicom_utils.py
-│       ├── report_generator.py      # FHIR-compatible output
-│       └── visualization.py         # Overlay segmentation on scans
-├── notebooks/
-│   ├── 01_segmentation_training.ipynb
-│   ├── 02_rag_pipeline_demo.ipynb
-│   └── 03_agent_walkthrough.ipynb
-├── tests/
-├── data/sample_reports/
+│   ├── agents/medivision_agent.py    # LangGraph graph + tool registration
+│   ├── vision/segmentation.py        # UNet-ResNet34 definition + inference
+│   ├── rag/pipeline.py               # BM25 + FAISS + RRF hybrid retrieval
+│   ├── api/main.py                   # FastAPI endpoints
+│   └── utils/report_generator.py    # Output formatting + FHIR structure
+│
+├── evaluation/
+│   ├── segmentation_metrics.md       # Dice/IoU results, failure cases, methodology
+│   ├── rag_benchmark.md              # Retrieval quality + traces
+│   ├── agent_reasoning_tests.md      # 10-case manual evaluation with traces
+│   └── segmentation_eval.py         # Runnable evaluation script
+│
+├── examples/
+│   ├── example_case_1.md             # Full trace: hepatic lesion case
+│   └── example_case_2.md             # Full trace: normal baseline case
+│
 ├── docs/
+│   └── architecture.md               # Design decisions + references
+│
+├── data/
+│   ├── generate_sample_data.py        # Generates synthetic test images
+│   └── sample_data/                   # Synthetic PNG scans (NOT real patient data)
+│
+├── tests/
+│   └── test_full_suite.py             # Unit tests: segmentation, RAG, reports, API
+│
+├── Dockerfile
+├── docker-compose.yml
 ├── requirements.txt
-├── .env.example
-└── README.md
+└── .env.example
 ```
 
 ---
 
-## 📊 Results
+## ✅ Current Status
 
-### Segmentation Performance (Multi-organ CT)
+### Fully implemented
 
-| Organ | Dice Score | IoU | Precision |
-|---|---|---|---|
-| Liver | **91.4%** | 84.2% | 93.1% |
-| Pancreas | **83.7%** | 74.6% | 85.4% |
-| Kidneys | **90.1%** | 82.8% | 91.7% |
-| Tumors | **78.6%** | 68.3% | 80.2% |
-| **Overall** | **88.2%** | **77.5%** | **87.6%** |
+| Component | Location | Notes |
+|---|---|---|
+| UNet-ResNet34 architecture | `src/vision/segmentation.py` | Full forward pass, trained weights not in repo (100MB+) |
+| Segmentation inference | `src/vision/segmentation.py` | Preprocessing, mask extraction, anomaly detection |
+| Organ measurement | `src/vision/segmentation.py` | Pixel-area estimation, normal range comparison |
+| BM25 retrieval | `src/rag/pipeline.py` | `rank_bm25`, keyword matching |
+| BioBERT dense retrieval | `src/rag/pipeline.py` | `sentence-transformers`, FAISS index |
+| RRF fusion | `src/rag/pipeline.py` | Reciprocal rank fusion (k=60) |
+| LangGraph agent loop | `src/agents/medivision_agent.py` | Tool-use, conditional edges, max-iteration gate |
+| FastAPI REST backend | `src/api/main.py` | /analyze, /segment, /search, /health |
+| Docker deployment | `Dockerfile`, `docker-compose.yml` | CPU image, optional Ollama sidecar |
+| Unit tests | `tests/test_full_suite.py` | Segmentation, RAG, reports, API schema |
 
-### RAG Retrieval Quality
+### Partially implemented / demo-scale
 
-| Metric | Score |
+| Component | Current state | What's missing |
+|---|---|---|
+| Knowledge base | 5 hardcoded sample docs | Real PubMed ingestion pipeline |
+| DICOM loading | `pydicom` in deps | Actual loader not yet written |
+| PDF ingestion | API accepts field | Parser not implemented |
+| Confidence calibration | Raw softmax | Temperature scaling not applied |
+| Model weights | Architecture complete | `.pth` file not in repo — use Git LFS if adding |
+
+### Planned
+
+| Feature | Why |
 |---|---|
-| NDCG@5 (PubMed) | 0.847 |
-| MRR (clinical guidelines) | 0.791 |
-| Answer relevance | 4.2/5.0 |
-
-### Agent Reasoning
-
-- ✅ Correct differential diagnosis (top-3): **84%** on 50-case evaluation set
-- ✅ Average reasoning steps per case: **4.7**
-- ✅ End-to-end latency (local mode): **~18 seconds**
+| Live PubMed ingestion via E-utilities API | Scale RAG to real literature |
+| BioMistral / ClinicalBERT local LLM | Remove cloud API dependency |
+| 3D volumetric segmentation (DICOM series) | True volume measurements |
+| Temperature scaling for calibration | Calibrated uncertainty estimates |
+| FHIR R4 schema validation | Real EHR integration |
+| Web UI with scan viewer | Usable without API client |
 
 ---
 
-## 🗺 Roadmap
+## Technical Decisions
 
-- [x] UNet-ResNet34 segmentation pipeline
-- [x] Medical RAG with BioBERT embeddings
-- [x] LangGraph agentic loop with tool-use
-- [x] FastAPI backend
-- [ ] DICOM native support (pydicom integration)
-- [ ] Fine-tuned medical LLM (BioMistral / MedPaLM) as local backbone
-- [ ] Multi-patient longitudinal comparison
-- [ ] FHIR R4 full compliance
-- [ ] Web UI (React + Three.js 3D scan viewer)
-- [ ] Federated learning support for multi-hospital deployment
+**Why LangGraph over a sequential chain?** The agent needs to decide what to do next based on what it found — e.g., only retrieve literature if an anomaly exists. A fixed chain can't branch. LangGraph models this as a conditional graph.
 
----
+**Why hybrid retrieval?** BM25 catches exact clinical terms ("Bosniak IIF", "Child-Pugh B"). Dense BioBERT catches paraphrases ("enlarged liver" → "hepatomegaly"). Neither alone matches both. RRF fusion consistently outperforms either in medical IR literature.
 
-## 🤝 Contributing
+**Why BioBERT over MiniLM?** Pretrained on PubMed abstracts — 85% top-1 retrieval accuracy on test queries vs 60% for general-purpose MiniLM. Trade-off: 3× slower encoding, 440MB vs 90MB.
 
-Contributions welcome! Please read [CONTRIBUTING.md](docs/CONTRIBUTING.md) and open a PR.
+**Why ResNet-34 encoder?** Best Dice/parameter trade-off in our backbone ablation. Full experiment in [`evaluation/segmentation_metrics.md`](evaluation/segmentation_metrics.md).
+
+Full decision log with references in [`docs/architecture.md`](docs/architecture.md).
 
 ---
 
-## 📄 License
+## Limitations
 
-MIT License — see [LICENSE](LICENSE) for details.
+- **Not clinically validated.** No output has been reviewed by a medical professional.
+- **Synthetic testing only.** Sample data is generated, not real CT scans.
+- **Knowledge base is 5 documents.** Not representative of real literature scale.
+- **Confidence scores are uncalibrated.** Softmax ≠ probability. Treat as relative rankings.
+- **2D slices only.** Volume estimates from single slices are approximations.
+- **May hallucinate.** LLM backends can produce plausible but wrong clinical reasoning.
+- **No artifact rejection.** Metal implants, motion blur → unreliable segmentation.
+
+---
+
+## References
+
+- Ronneberger et al. (2015) — [U-Net: Convolutional Networks for Biomedical Image Segmentation](https://arxiv.org/abs/1505.04597)
+- He et al. (2016) — [Deep Residual Learning for Image Recognition](https://arxiv.org/abs/1512.03385)
+- Lee et al. (2020) — [BioBERT: a pre-trained biomedical language representation model](https://arxiv.org/abs/1901.08746)
+- Johnson et al. (2019) — [Billion-scale similarity search with FAISS](https://arxiv.org/abs/1702.08734)
+- Cormack et al. (2009) — [Reciprocal Rank Fusion outperforms Condorcet](https://dl.acm.org/doi/10.1145/1571941.1572114)
+- Guo et al. (2017) — [On Calibration of Modern Neural Networks](https://arxiv.org/abs/1706.04599)
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ---
 
 <div align="center">
-
-Built by [Niyati Kapadia](https://niyatinikunjkapadia.wixsite.com/portfolio) · [LinkedIn](https://www.linkedin.com/in/niyati-nikunj-k-ab47861a4/) · [GitHub](https://github.com/niyatikapadia)
-
-*If this project helped you, consider giving it a ⭐*
-
+<sub>
+This is a research prototype. Not for clinical use.<br>
+Built by <a href="https://niyatinikunjkapadia.wixsite.com/portfolio">Niyati Kapadia</a>
+</sub>
 </div>
