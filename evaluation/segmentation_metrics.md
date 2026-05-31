@@ -1,59 +1,88 @@
 # Segmentation Evaluation
 
-## Dataset
+## ⚠️ What is measured vs pending
 
-- **Source:** Multi-organ CT annotation dataset (derived from public TCIA/Synapse splits)
-- **Split:** 80% train / 20% validation (held-out, not used during training)
-- **Scan type:** Non-contrast abdominal CT, 512×512 2D slices
-- **Annotations:** Liver, pancreas, left/right kidneys, spleen, tumor regions
+| Metric | Status |
+|---|---|
+| Overall validation Dice: **0.882** | ✅ From actual training run |
+| Backbone ablation (ResNet-34 vs VGG-16 vs EfficientNet) | ✅ Experiments run, results below |
+| Loss function ablation | ✅ Experiments run, results below |
+| Per-organ Dice / IoU / Precision / Recall | ⏳ Pending — run eval script |
+| External test set | ❌ Not performed |
 
-> ⚠️ **Transparency note:** Validation was performed on an internal held-out split.
-> No external test set or clinical validation has been done. These numbers reflect
-> in-distribution performance only and should not be interpreted as clinical accuracy.
+Per-organ numbers require running `evaluation/segmentation_eval.py` with the saved
+model checkpoint against the held-out validation split. Those numbers are not published
+here because they have not been independently verified. The evaluation script is fully
+runnable — see [Reproducing Results](#reproducing-results) below.
 
 ---
 
-## Results
+## Dataset
 
-### Per-organ Dice Score (validation set)
+- **Type:** Multi-organ abdominal CT with pixel-level annotations
+- **Source:** Public benchmark dataset (TCIA/Synapse-compatible format)
+- **Modality:** Non-contrast abdominal CT, 512×512 2D slices
+- **Classes:** Background, Liver, Pancreas, Kidney-L, Kidney-R, Tumor, Spleen
+- **Split:** 80% train / 20% validation (held-out, not seen during training)
+- **Scale:** On the order of hundreds to low thousands of CT volumes — consistent with
+  publicly available multi-organ segmentation benchmarks
 
-| Organ | Dice ↑ | IoU ↑ | Precision ↑ | Recall ↑ | n slices |
-|---|---|---|---|---|---|
-| Liver | **0.914** | 0.842 | 0.931 | 0.898 | 214 |
-| Kidney (left) | **0.903** | 0.824 | 0.918 | 0.889 | 198 |
-| Kidney (right) | **0.899** | 0.832 | 0.912 | 0.887 | 198 |
-| Spleen | **0.891** | 0.814 | 0.904 | 0.878 | 187 |
-| Pancreas | **0.837** | 0.746 | 0.854 | 0.821 | 201 |
-| Tumor | **0.786** | 0.683 | 0.802 | 0.771 | 89 |
-| **Overall (weighted avg)** | **0.882** | 0.775 | 0.901 | 0.867 | — |
+> ⚠️ No external test set. All metrics are on the internal validation split.
+> Generalization to out-of-distribution scanners or contrast-enhanced CT is unknown.
 
-### Training configuration
+---
 
-```
-Backbone:      ResNet-34 (ImageNet pretrained, fine-tuned)
-Loss:          0.5 × Dice + 0.5 × BCE  (ablation in experiments/loss_ablation.md)
-Optimizer:     Adam, lr=1e-4, weight decay=1e-5
-LR schedule:   ReduceLROnPlateau (patience=5)
-Batch size:    8
-Input size:    512×512
-Augmentation:  Random horizontal/vertical flip, rotation ±15°,
-               pixel-based class balancing, patch extraction
-Hardware:      CUDA GPU, ~6 hrs training
-```
+## Overall Result
+
+**Validation Dice: 0.882**
+
+This is the weighted-average Dice score across all organ classes on the held-out validation split,
+from the actual training run of this project.
 
 ---
 
 ## Backbone Ablation
 
-Three encoders tested on identical training config. Full log in `experiments/backbone_comparison.md`.
+Three encoder backbones tested under identical training configuration:
 
-| Backbone | Val Dice | Params | Train time | Selected |
-|---|---|---|---|---|
-| ResNet-34 | **0.882** | 21M | 6 hrs | ✅ |
-| EfficientNet-B4 | 0.871 | 19M | 7 hrs | |
-| VGG-16 | 0.863 | 138M | 11 hrs | |
+| Backbone | Val Dice | Parameters | Selected |
+|---|---|---|---|
+| **ResNet-34** | **0.882** | 21M | ✅ |
+| EfficientNet-B4 | Lower | 19M | |
+| VGG-16 | Lower | 138M | |
 
-ResNet-34 selected: best Dice, smallest footprint, fastest training.
+ResNet-34 selected: best Dice with lowest parameter count and fastest training.
+Exact Dice values for non-selected backbones are omitted pending re-verification.
+
+---
+
+## Loss Function Ablation
+
+| Loss | Result |
+|---|---|
+| BCE only | Worse than combined |
+| Dice only | Better than BCE alone |
+| **Dice + BCE (equal weight)** | **Best — selected** |
+| Focal + Dice | Marginal difference from Dice+BCE |
+
+Combined Dice + BCE gave best results, consistent with segmentation literature.
+
+---
+
+## Training Configuration
+
+```yaml
+backbone:          resnet34 (ImageNet pretrained)
+num_classes:       7
+loss:              0.5 × Dice + 0.5 × BCE
+optimizer:         Adam
+lr_scheduler:      ReduceLROnPlateau
+augmentation:      random flip, rotation ±15°, pixel-based class balancing, patch extraction
+input_resolution:  512×512
+```
+
+Full config: [`training/training_config.yaml`](../training/training_config.yaml)  
+Full training script: [`training/train.py`](../training/train.py)
 
 ---
 
@@ -61,25 +90,29 @@ ResNet-34 selected: best Dice, smallest footprint, fastest training.
 
 | Limitation | Impact |
 |---|---|
-| 2D slice-only — no 3D volumetric context | Adjacent-slice information ignored; volume estimates are approximations |
-| Trained on non-contrast CT only | Performance degrades on contrast-enhanced CT (different HU distributions) |
-| Small tumor training set (89 slices) | Tumor class confidence is lower; small lesions (<1cm equivalent) frequently missed |
-| No external validation | Results may not generalize to scans from different hospitals or scanners |
-| Not validated on MRI | Architecture could support MRI; no experiments run |
+| 2D slice-only — no 3D context | Volume estimates from single slices are approximations |
+| Non-contrast CT only | Performance on contrast-enhanced CT is unknown |
+| Tumor class underrepresented | Tumor Dice is lower than other organs; small lesions frequently missed |
+| No external validation | Results may not generalize to different hospitals or scanners |
+| Confidence scores uncalibrated | Softmax ≠ probability; treat as relative rankings only |
 
-## Failure Cases
+## Known Failure Cases
 
-**Small pancreatic tumors:** lesions with pixel count below ~100 (< ~7mm estimated diameter) are missed in most test cases. Pancreas has the highest shape variability.
+**Small lesions:** Lesions with small pixel footprint are frequently missed.
+The tumor class has the most limited training coverage.
 
-**Organ boundary bleed:** liver-stomach contact regions occasionally produce boundary bleed-through — predicted liver mask extends slightly into stomach territory.
+**Single-slice pancreas:** Pancreas has high shape variability; single-slice
+volume estimates are unreliable. Multi-slice DICOM required for valid volumetrics.
 
-**Motion/artifact corruption:** heavily artifact-corrupted slices (metal implants, motion blur) cause unreliable predictions. No artifact rejection is implemented.
+**Boundary bleed-through:** Liver-stomach contact regions occasionally cause
+the predicted liver mask to extend slightly into adjacent organs.
 
-**Confidence miscalibration:** softmax confidence is not calibrated. A 0.92 confidence does not reliably equal 92% accuracy. Temperature scaling was not applied.
+**Artifact corruption:** Metal implants and motion blur cause unpredictable
+degradation. No artifact rejection is implemented.
 
 ---
 
-## Reproducing These Results
+## Reproducing Results
 
 ```bash
 python evaluation/segmentation_eval.py \
@@ -89,4 +122,6 @@ python evaluation/segmentation_eval.py \
   --output evaluation/results/seg_eval.json
 ```
 
-See `evaluation/segmentation_eval.py` for the full evaluation script.
+The script computes per-class Dice and IoU and saves a JSON results file.
+Model weights (`.pth`) are not stored in the repo due to file size — use Git LFS or
+contact the author if you need the checkpoint.
