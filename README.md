@@ -80,16 +80,18 @@ The key idea: the LLM doesn't just answer one question — it uses tools iterati
 
 Trained on a multi-organ CT dataset. Evaluated on a held-out internal validation split (not used during training).
 
-| Organ | Dice ↑ | IoU ↑ | Precision ↑ | Recall ↑ |
-|---|---|---|---|---|
-| Liver | 0.914 | 0.842 | 0.931 | 0.898 |
-| Kidneys (avg) | 0.901 | 0.828 | 0.915 | 0.888 |
-| Spleen | 0.891 | 0.814 | 0.904 | 0.878 |
-| Pancreas | 0.837 | 0.746 | 0.854 | 0.821 |
-| Tumor | 0.786 | 0.683 | 0.802 | 0.771 |
-| **Overall** | **0.882** | **0.775** | **0.901** | **0.867** |
+| Metric | Value | Status |
+|---|---|---|
+| Overall validation Dice | **0.882** | ✅ From actual training run |
+| Per-organ breakdown | See eval script | ⏳ Run `evaluation/segmentation_eval.py` to reproduce |
+| External test set | Not performed | ⚠️ Known limitation |
 
-> ⚠️ Internal validation only — no external test set. See [`evaluation/segmentation_metrics.md`](evaluation/segmentation_metrics.md) for full methodology, failure cases, and limitations.
+> Per-organ Dice/IoU numbers are pending independent verification.
+> Run the evaluation script with the model checkpoint to generate them.
+> See [`evaluation/segmentation_metrics.md`](evaluation/segmentation_metrics.md).
+
+> ⚠️ Internal validation only — no external test set. Per-organ metrics pending verification.
+> See [`evaluation/segmentation_metrics.md`](evaluation/segmentation_metrics.md) for full methodology, limitations, and how to reproduce.
 
 **Backbone ablation** — why ResNet-34:
 
