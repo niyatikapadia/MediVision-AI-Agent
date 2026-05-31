@@ -1,127 +1,86 @@
-# Segmentation Evaluation
+# Segmentation Evaluation Results
 
-## ⚠️ What is measured vs pending
+All metrics measured on the **official Synapse test_vol_h5 set** (12 volumes, 1,568 slices).
+These are real numbers from an actual training run — see [`evaluation/results/final_results.json`](results/final_results.json).
 
-| Metric | Status |
+---
+
+## Results
+
+### Overall
+
+| Metric | Value |
 |---|---|
-| Overall validation Dice: **0.882** | ✅ From actual training run |
-| Backbone ablation (ResNet-34 vs VGG-16 vs EfficientNet) | ✅ Experiments run, results below |
-| Loss function ablation | ✅ Experiments run, results below |
-| Per-organ Dice / IoU / Precision / Recall | ⏳ Pending — run eval script |
-| External test set | ❌ Not performed |
+| **Test Dice (mean)** | **0.7760** |
+| **Test IoU (mean)** | **0.6529** |
+| Best validation Dice | 0.9234 |
 
-Per-organ numbers require running `evaluation/segmentation_eval.py` with the saved
-model checkpoint against the held-out validation split. Those numbers are not published
-here because they have not been independently verified. The evaluation script is fully
-runnable — see [Reproducing Results](#reproducing-results) below.
+### Per-class Dice
 
----
-
-## Dataset
-
-- **Type:** Multi-organ abdominal CT with pixel-level annotations
-- **Source:** Public benchmark dataset (TCIA/Synapse-compatible format)
-- **Modality:** Non-contrast abdominal CT, 512×512 2D slices
-- **Classes:** Background, Liver, Pancreas, Kidney-L, Kidney-R, Tumor, Spleen
-- **Split:** 80% train / 20% validation (held-out, not seen during training)
-- **Scale:** On the order of hundreds to low thousands of CT volumes — consistent with
-  publicly available multi-organ segmentation benchmarks
-
-> ⚠️ No external test set. All metrics are on the internal validation split.
-> Generalization to out-of-distribution scanners or contrast-enhanced CT is unknown.
+| Organ | Dice ↑ | IoU (approx) |
+|---|---|---|
+| Right kidney | 0.9433 | 0.893 |
+| Spleen | 0.8911 | 0.804 |
+| Left kidney | 0.8415 | 0.727 |
+| Aorta | 0.8483 | 0.737 |
+| Stomach | 0.8197 | 0.695 |
+| Pancreas | 0.7367 | 0.583 |
+| Gallbladder | 0.5850 | 0.413 |
+| Liver | 0.5425 | 0.373 |
+| **Mean** | **0.7760** | **0.6529** |
 
 ---
 
-## Overall Result
+## Comparison to Published Baselines
 
-**Validation Dice: 0.882**
+| Model | Mean Dice | Architecture |
+|---|---|---|
+| Swin-UNet | 0.790 | Transformer |
+| TransUNet | 0.772 | CNN + Transformer |
+| **MediVision (ours)** | **0.776** | UNet-ResNet34 |
+| DARR | 0.696 | CNN |
+| V-Net | 0.683 | 3D CNN |
 
-This is the weighted-average Dice score across all organ classes on the held-out validation split,
-from the actual training run of this project.
-
----
-
-## Backbone Ablation
-
-Three encoder backbones tested under identical training configuration:
-
-| Backbone | Val Dice | Parameters | Selected |
-|---|---|---|---|
-| **ResNet-34** | **0.882** | 21M | ✅ |
-| EfficientNet-B4 | Lower | 19M | |
-| VGG-16 | Lower | 138M | |
-
-ResNet-34 selected: best Dice with lowest parameter count and fastest training.
-Exact Dice values for non-selected backbones are omitted pending re-verification.
+MediVision matches TransUNet using a simpler 2D CNN architecture.
+See [`docs/architecture.md`](../docs/architecture.md) for design decisions.
 
 ---
 
-## Loss Function Ablation
+## Training Setup
 
-| Loss | Result |
-|---|---|
-| BCE only | Worse than combined |
-| Dice only | Better than BCE alone |
-| **Dice + BCE (equal weight)** | **Best — selected** |
-| Focal + Dice | Marginal difference from Dice+BCE |
-
-Combined Dice + BCE gave best results, consistent with segmentation literature.
+- **Dataset:** Synapse multi-organ CT (TransUNet preprocessed)
+- **Split:** 80/20 train/val from train_npz + official test_vol_h5
+- **Hardware:** Kaggle Tesla P100-PCIE-16GB
+- **Duration:** 150 epochs, ~38 minutes total
+- **Normalization:** Per-slice min-max [0, 1] — applied identically to train and test
 
 ---
 
-## Training Configuration
+## Known Weaknesses
 
-```yaml
-backbone:          resnet34 (ImageNet pretrained)
-num_classes:       7
-loss:              0.5 × Dice + 0.5 × BCE
-optimizer:         Adam
-lr_scheduler:      ReduceLROnPlateau
-augmentation:      random flip, rotation ±15°, pixel-based class balancing, patch extraction
-input_resolution:  512×512
-```
+**Gallbladder (0.585):** Hardest class. Small, frequently absent/collapsed in CT volumes.
+2D model cannot use adjacent-slice context. Improvement planned via class-weighted loss
+and attention mechanisms — see [`training/train_gallbladder_improved.py`](../training/train_gallbladder_improved.py).
 
-Full config: [`training/training_config.yaml`](../training/training_config.yaml)  
-Full training script: [`training/train.py`](../training/train.py)
+**Liver (0.543):** Unexpectedly low given liver is the largest organ. Likely caused by
+boundary ambiguity at liver-stomach contact regions in the test set. Per-slice normalization
+may also reduce global contrast consistency.
 
----
-
-## Known Limitations
-
-| Limitation | Impact |
-|---|---|
-| 2D slice-only — no 3D context | Volume estimates from single slices are approximations |
-| Non-contrast CT only | Performance on contrast-enhanced CT is unknown |
-| Tumor class underrepresented | Tumor Dice is lower than other organs; small lesions frequently missed |
-| No external validation | Results may not generalize to different hospitals or scanners |
-| Confidence scores uncalibrated | Softmax ≠ probability; treat as relative rankings only |
-
-## Known Failure Cases
-
-**Small lesions:** Lesions with small pixel footprint are frequently missed.
-The tumor class has the most limited training coverage.
-
-**Single-slice pancreas:** Pancreas has high shape variability; single-slice
-volume estimates are unreliable. Multi-slice DICOM required for valid volumetrics.
-
-**Boundary bleed-through:** Liver-stomach contact regions occasionally cause
-the predicted liver mask to extend slightly into adjacent organs.
-
-**Artifact corruption:** Metal implants and motion blur cause unpredictable
-degradation. No artifact rejection is implemented.
+**Val vs Test gap (0.923 → 0.776):** The gap between validation Dice (on train_npz held-out)
+and test Dice (on test_vol_h5) is significant. The test volumes likely come from different
+scanners or protocols. This is a known limitation of 2D per-slice models.
 
 ---
 
 ## Reproducing Results
 
 ```bash
-python evaluation/segmentation_eval.py \
-  --images data/val/images/ \
-  --masks  data/val/masks/ \
-  --checkpoint models/unet_resnet34_multiorgan.pth \
-  --output evaluation/results/seg_eval.json
-```
+# Train from scratch
+python training/train.py
 
-The script computes per-class Dice and IoU and saves a JSON results file.
-Model weights (`.pth`) are not stored in the repo due to file size — use Git LFS or
-contact the author if you need the checkpoint.
+# Evaluate saved checkpoint
+python evaluation/segmentation_eval.py \
+  --test_dir  data/Synapse/test_vol_h5 \
+  --checkpoint models/unet_resnet34_synapse_best.pth \
+  --output evaluation/results/eval_output.json
+```
