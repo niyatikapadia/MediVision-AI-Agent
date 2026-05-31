@@ -70,20 +70,18 @@
 
 ## Evaluation
 
-### Metrics (internal validation split)
+### Metrics
 
-| Class | Dice ↑ | IoU ↑ | Precision ↑ | Recall ↑ | Support (slices) |
-|---|---|---|---|---|---|
-| Liver | 0.914 | 0.842 | 0.931 | 0.898 | 214 |
-| Kidney (left) | 0.903 | 0.824 | 0.918 | 0.889 | 198 |
-| Kidney (right) | 0.899 | 0.832 | 0.912 | 0.887 | 198 |
-| Spleen | 0.891 | 0.814 | 0.904 | 0.878 | 187 |
-| Pancreas | 0.837 | 0.746 | 0.854 | 0.821 | 201 |
-| Tumor | 0.786 | 0.683 | 0.802 | 0.771 | 89 |
-| **Overall (weighted avg)** | **0.882** | **0.775** | **0.901** | **0.867** | — |
+| Metric | Value | Status |
+|---|---|---|
+| Overall validation Dice | **0.882** | ✅ From actual training run |
+| Per-organ Dice / IoU / Precision / Recall | Not published | ⏳ Pending — run `evaluation/segmentation_eval.py` |
+| Slice counts per class | Not published | ⏳ Pending verification |
+| External test set | Not performed | ⚠️ Known limitation |
 
-**Metric computation:** standard Dice coefficient and IoU computed on binarized per-class masks.  
-Slices where neither prediction nor ground truth contain the class are excluded from per-class averages.
+Per-organ numbers have not been independently verified and are not stated here.
+Run the evaluation script with the saved model checkpoint to generate them.
+See [`evaluation/segmentation_metrics.md`](evaluation/segmentation_metrics.md).
 
 Full evaluation script: [`evaluation/segmentation_eval.py`](evaluation/segmentation_eval.py)  
 Full results discussion: [`evaluation/segmentation_metrics.md`](evaluation/segmentation_metrics.md)
