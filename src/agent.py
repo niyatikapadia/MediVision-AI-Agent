@@ -1,101 +1,103 @@
 """
-MediVision Agent — calls Ollama locally (llama3 or mistral).
-No API key needed. Runs fully offline.
+MediVision Agent — calls Ollama locally.
+Uses tinyllama for fast local inference (~5-15 seconds).
 """
 from __future__ import annotations
 import json, requests
 
-SYSTEM_PROMPT = """You are MediVision, an expert AI medical imaging analyst.
-You will receive:
-- Organ segmentation results from a CT scan
-- Measurements and normal range comparisons
-- Retrieved medical literature
+SYSTEM_PROMPT = """You are a medical imaging AI assistant.
+Given CT scan segmentation results and clinical notes, produce a concise report with:
+1. Key findings (2-3 bullet points)
+2. Top 2 differential diagnoses with confidence (0.0-1.0)
+3. One recommended follow-up action
 
-Your task: produce a structured diagnostic report with:
-1. Summary of findings
-2. Differential diagnosis (ranked by likelihood) with confidence 0-1
-3. Recommended follow-up actions
-
-Be concise. Always include this disclaimer at the end:
-"DISCLAIMER: Research prototype only. Not for clinical use. Requires expert radiologist review."
-"""
+Be brief and structured. Always end with:
+DISCLAIMER: Research prototype. Not for clinical use. Requires radiologist review."""
 
 class MediVisionAgent:
-    def __init__(self, rag, ollama_model: str = "llama3", ollama_url: str = "http://localhost:11434"):
-        self.rag         = rag
-        self.model       = ollama_model
-        self.ollama_url  = ollama_url
+    def __init__(self, rag, ollama_model: str = "tinyllama",
+                 ollama_url: str = "http://localhost:11434"):
+        self.rag        = rag
+        self.model      = ollama_model
+        self.ollama_url = ollama_url
         self._check_ollama()
 
     def _check_ollama(self):
         try:
             r = requests.get(f"{self.ollama_url}/api/tags", timeout=3)
             models = [m["name"] for m in r.json().get("models", [])]
-            print(f"  Ollama connected. Available models: {models}")
+            print(f"  Ollama connected. Models: {models}")
             if not any(self.model in m for m in models):
-                print(f"  ⚠️  {self.model} not found. Available: {models}")
+                print(f"  {self.model} not found. Available: {models}")
                 if models:
                     self.model = models[0].split(":")[0]
-                    print(f"  Using {self.model} instead.")
+                    print(f"  Falling back to {self.model}")
         except Exception as e:
-            print(f"  ⚠️  Ollama not reachable: {e}")
-            print("  Make sure Ollama is running: ollama serve")
+            print(f"  Ollama not reachable: {e}. Run: ollama serve")
 
-    def reason(self, seg_output, measurements, normals, rag_results, clinical_notes) -> dict:
-        prompt = self._build_prompt(seg_output, measurements, normals, rag_results, clinical_notes)
+    def reason(self, seg_output, measurements, normals,
+               rag_results, clinical_notes) -> dict:
+        prompt = self._build_prompt(
+            seg_output, measurements, normals, rag_results, clinical_notes)
         try:
             response = requests.post(
                 f"{self.ollama_url}/api/generate",
-                json={"model": self.model, "prompt": prompt, "stream": False,
-                      "system": SYSTEM_PROMPT},
+                json={
+                    "model":   self.model,
+                    "prompt":  prompt,
+                    "system":  SYSTEM_PROMPT,
+                    "stream":  False,
+                    "options": {
+                        "num_predict": 300,   # short output = fast
+                        "temperature": 0.3,   # focused/deterministic
+                        "top_p": 0.9,
+                    }
+                },
                 timeout=120,
             )
-            report_text = response.json().get("response", "No response from model.")
+            text = response.json().get("response", "No response from model.")
         except Exception as e:
-            report_text = f"Agent error: {e}\n\nFallback summary:\n{self._fallback_report(normals, seg_output)}"
+            text = (f"Agent error: {e}\n\n"
+                    + self._fallback_report(normals, seg_output))
+        return {"report_text": text, "model": self.model}
 
-        return {"report_text": report_text, "model": self.model}
-
-    def _build_prompt(self, seg_output, measurements, normals, rag_results, clinical_notes):
+    def _build_prompt(self, seg_output, measurements, normals,
+                      rag_results, clinical_notes):
         organs = seg_output.get("organ_masks", {})
         anomalies = seg_output.get("anomalies", [])
 
         organ_lines = "\n".join(
-            f"  - {name}: detected={d['detected']}, confidence={d['confidence']}, "
-            f"volume≈{measurements.get(name,{}).get('estimated_volume_cm3','—')}cm³, "
+            f"  {name}: conf={d['confidence']:.2f}, "
+            f"vol={measurements.get(name,{}).get('estimated_volume_cm3','?'):.1f}cm3, "
             f"status={normals.get(name,{}).get('status','unknown')}"
             for name, d in organs.items()
-        )
+        ) or "  No organs detected"
+
         anomaly_lines = "\n".join(
-            f"  - {a['type']}: severity={a['severity']}, confidence={a['confidence']}"
+            f"  {a['type']}: severity={a['severity']}"
             for a in anomalies
-        ) or "  None detected"
+        ) or "  None"
 
-        rag_lines = "\n".join(
-            f"  [{i+1}] {r['title']}\n      Key: {r['abstract'][:120]}..."
-            for i, r in enumerate(rag_results)
-        )
+        rag_line = rag_results[0]["abstract"][:150] if rag_results else "No evidence retrieved."
 
-        return f"""CLINICAL NOTES: {clinical_notes}
+        return f"""Patient: {clinical_notes}
 
-SEGMENTATION FINDINGS:
+Segmentation findings:
 {organ_lines}
 
-ANOMALIES:
+Anomalies:
 {anomaly_lines}
 
-RETRIEVED MEDICAL EVIDENCE:
-{rag_lines}
+Relevant evidence: {rag_line}
 
-Please provide a structured diagnostic report."""
+Write a brief structured diagnostic report."""
 
     def _fallback_report(self, normals, seg_output):
-        lines = ["## Automated Findings Summary\n"]
+        lines = ["**Automated Findings**\n"]
         for organ, data in normals.items():
-            status = data.get("status", "unknown")
-            emoji = "✅" if status == "normal" else "⚠️"
-            lines.append(f"{emoji} {organ}: {status}")
+            s = data.get("status","unknown")
+            lines.append(f"- {organ}: {s}")
         if seg_output.get("anomalies"):
-            lines.append("\n⚠️ Anomalies detected — radiologist review recommended.")
-        lines.append("\nDISCLAIMER: Research prototype only. Not for clinical use.")
+            lines.append("\n⚠️ Anomalies detected — review recommended.")
+        lines.append("\nDISCLAIMER: Research prototype. Not for clinical use.")
         return "\n".join(lines)
