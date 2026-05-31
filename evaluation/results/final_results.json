@@ -1,0 +1,21 @@
+{
+  "dataset": "Synapse multi-organ CT (TransUNet preprocessed)",
+  "source": "https://www.synapse.org/#!Synapse:syn3193805",
+  "train_val_split": "80/20 of train_npz (seed=42)",
+  "best_val_dice": 0.9234,
+  "test_dice": 0.776,
+  "test_iou": 0.6529,
+  "per_class_dice": {
+    "aorta": 0.8483,
+    "gallbladder": 0.585,
+    "spleen": 0.8911,
+    "left_kidney": 0.8415,
+    "right_kidney": 0.9433,
+    "liver": 0.5425,
+    "stomach": 0.8197,
+    "pancreas": 0.7367
+  },
+  "model": "UNet-ResNet34 (segmentation_models_pytorch)",
+  "normalization": "per-slice min-max [0,1] applied to both train and test",
+  "note": "Real measured results from training on Kaggle P100. Evaluated on official test_vol_h5 set."
+}
