@@ -1,7 +1,5 @@
 """
-MediVision Demo — Local Web App v3
-Full pipeline: segmentation → RAG (organ-aware) → Ollama → structured report
-Run: python app.py  →  http://localhost:7860
+MediVision Demo v4 — real volume estimates with uncertainty
 """
 import json, time
 from pathlib import Path
@@ -52,7 +50,6 @@ def run_pipeline(image, clinical_notes):
     )
 
     elapsed = time.time() - t0
-
     findings_md = _format_findings(seg_output, measurements, normals, elapsed)
     rag_json    = json.dumps([{
         "title":        r["title"],
@@ -60,9 +57,8 @@ def run_pipeline(image, clinical_notes):
         "match_reason": r.get("match_reason",""),
         "abstract":     r.get("abstract","")[:120]+"..."
     } for r in rag_results], indent=2)
-    report_text = report.get("report_text", "No report generated.")
 
-    return overlay_img, findings_md, rag_json, report_text
+    return overlay_img, findings_md, rag_json, report.get("report_text","")
 
 
 def _format_findings(seg_output, measurements, normals, elapsed):
@@ -77,41 +73,56 @@ def _format_findings(seg_output, measurements, normals, elapsed):
         )
 
     lines = [
-        f"### {len(organs)} organs detected &nbsp; · &nbsp; {elapsed:.1f}s\n",
-        "> ⚠️ **Single-slice analysis only.** "
-        "Coverage % shown — volume requires full DICOM series.\n"
+        f"### {len(organs)} organs detected &nbsp;·&nbsp; {elapsed:.1f}s\n",
+        "> ⚠️ Volumes estimated assuming standard abdominal CT protocol "
+        "(FOV=370mm, slice=5mm). Uncertainty ±30%. "
+        "For definitive volumetry, use DICOM with pixel spacing metadata.\n"
     ]
 
     for organ, data in organs.items():
-        conf     = data.get("confidence", 0)
-        coverage = measurements.get(organ, {}).get("coverage_pct", 0)
-        status   = normals.get(organ, {}).get("status", "—")
-        exp      = normals.get(organ, {}).get("expected_range", "—")
+        conf   = data.get("confidence", 0)
+        norm   = normals.get(organ, {})
+        status = norm.get("status", "—")
 
-        if status == "within_expected_range":
-            emoji = "✅"
-        elif status in ("smaller_than_expected","larger_than_expected"):
-            emoji = "⚠️"
+        if "estimated_volume_cm3" in norm:
+            vol     = norm["estimated_volume_cm3"]
+            rng     = norm.get("range_cm3", (vol, vol))
+            ref_rng = norm.get("clinical_range_cm3", [])
+            vol_str = f"~{vol} cm³ (range {rng[0]}–{rng[1]})"
+            ref_str = f"normal: {ref_rng[0]}–{ref_rng[1]} cm³" if ref_rng else ""
+        elif "estimated_diameter_mm" in norm:
+            diam    = norm["estimated_diameter_mm"]
+            vol_str = f"~{diam}mm diameter"
+            ref_str = f"normal: {norm.get('clinical_range_mm',[])[0]}–{norm.get('clinical_range_mm',[])[1]}mm" if norm.get("clinical_range_mm") else ""
         else:
-            emoji = "🔵"
+            meas    = measurements.get(organ, {})
+            vol     = meas.get("volume_cm3", "?")
+            vol_str = f"~{vol} cm³ (est.)"
+            ref_str = ""
 
+        if "below_normal" in status:  emoji = "⚠️"
+        elif "above_normal" in status: emoji = "🔴"
+        elif status == "normal":       emoji = "✅"
+        elif "borderline" in status:   emoji = "🟡"
+        else:                          emoji = "🔵"
+
+        ref_note = f" · *{ref_str}*" if ref_str else ""
         lines.append(
             f"{emoji} **{organ}** &nbsp; "
             f"conf: `{conf:.2f}` &nbsp; "
-            f"coverage: `{coverage:.1f}%` &nbsp; "
-            f"expected: `{exp}` &nbsp; "
+            f"{vol_str}{ref_note} &nbsp; "
             f"*{status}*"
         )
 
     if anomalies:
-        lines.append("\n### ⚠️ Flagged for review\n")
+        lines.append("\n### ⚠️ Flagged\n")
         for a in anomalies:
             lines.append(f"- **{a['type']}** | conf: {a['confidence']:.2f}")
 
     lines.append(
         "\n---\n"
-        "*Research prototype — not for clinical use. "
-        "Expert radiologist review required.*"
+        "*Volumes estimated from pixel coverage assuming standard CT protocol. "
+        "Not a clinical measurement. Expert radiologist review required.*"
     )
     return "\n".join(lines)
 
@@ -133,8 +144,8 @@ with gr.Blocks(title="MediVision AI Agent") as demo:
     <div style="background:#fff3cd;border-left:4px solid #ffc107;
                 padding:10px 16px;margin:0 0 14px;font-size:0.88em">
       ⚠️ <strong>Research prototype.</strong>
-      Not validated for clinical use. Single 2D slice analysis only.
-      Volume measurements require full DICOM series.
+      Not validated for clinical use. Single 2D slice analysis.
+      Volumes are <em>estimated</em> assuming standard CT protocol (±30% uncertainty).
       All outputs require expert radiologist review.
     </div>
     """)
@@ -144,40 +155,35 @@ with gr.Blocks(title="MediVision AI Agent") as demo:
             gr.Markdown("### Upload CT Slice")
             image_input = gr.Image(
                 label="Abdominal CT axial slice (PNG/JPG)",
-                type="pil",
-                height=300,
+                type="pil", height=300,
             )
             clinical_notes = gr.Textbox(
                 label="Clinical Notes (optional)",
-                placeholder="e.g. 58yo male, elevated LFTs, 3 weeks abdominal discomfort",
+                placeholder="e.g. 58yo male, elevated LFTs, abdominal discomfort",
                 lines=2,
             )
             run_btn = gr.Button("▶ Run Full Pipeline", variant="primary", size="lg")
             gr.Markdown(
-                "**What to upload:** A real abdominal CT scan axial slice.\n\n"
-                "**Not:** Photos, MRI, or chest CT.\n\n"
-                "**Agent reasoning takes 30–90s** — this is normal for local Llama3."
+                "**What to upload:** A real abdominal CT axial slice.\n\n"
+                "**Agent reasoning:** 30–90s locally (Llama3 7B)."
             )
 
         with gr.Column(scale=2):
             gr.Markdown("### Segmentation Overlay")
             overlay_output = gr.Image(
-                label="Organ masks — coloured regions = detected organs",
-                height=330
+                label="Organ masks — colours = detected organs, numbers = confidence",
+                height=340
             )
             with gr.Tabs():
                 with gr.Tab("📋 Findings"):
-                    findings_output = gr.Markdown(
-                        value="*Upload a CT scan and click Run.*"
-                    )
+                    findings_output = gr.Markdown(value="*Upload a CT scan and click Run.*")
                 with gr.Tab("📚 Retrieved Evidence"):
-                    rag_output = gr.Code(language="json",
-                        label="Organ-matched medical literature")
+                    rag_output = gr.Code(language="json", label="Organ-matched medical literature")
                 with gr.Tab("📄 Agent Report"):
                     report_output = gr.Textbox(
                         label="Llama3 structured diagnostic report",
                         lines=16,
-                        placeholder="Report appears here after pipeline runs..."
+                        placeholder="Report appears after pipeline runs..."
                     )
 
     run_btn.click(
@@ -187,11 +193,12 @@ with gr.Blocks(title="MediVision AI Agent") as demo:
     )
 
     gr.Markdown("""---
-**Pipeline:** Segmentation (UNet-ResNet34, Dice 0.776 on Synapse benchmark)
-→ RAG (BM25, 12 medical documents, organ-aware routing)
-→ Agent (Llama3 7B via Ollama, fully local, no API key)
+**Pipeline:** Segmentation (UNet-ResNet34, Dice 0.776)
+→ RAG (BM25, 12 documents, organ-aware routing)
+→ Agent (Llama3 7B via Ollama, fully local)
 
-**Honest limitations:** Single 2D slice · Small RAG KB · Volume requires DICOM · Not clinically validated
+**Volume methodology:** Pixel spacing estimated from standard abdominal CT FOV (370mm/512px).
+Slice thickness assumed 5mm. Uncertainty ±30%. For clinical use, provide DICOM metadata.
 
 Built by [Niyati Kapadia](https://niyatinikunjkapadia.wixsite.com/portfolio) ·
 [GitHub](https://github.com/niyatikapadia/MediVision-AI-Agent) ·
