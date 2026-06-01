@@ -1,14 +1,13 @@
 """
-Segmentation module — wraps your trained UNet-ResNet34 v2 checkpoint.
+Segmentation inference — UNet-ResNet34 v2 checkpoint.
+Volumes are NOT reported — requires full DICOM series with pixel spacing metadata.
+Only pixel coverage (%) and detection confidence are reported.
 """
-
 from __future__ import annotations
 import numpy as np
 import torch
-import torch.nn as nn
 from pathlib import Path
 from PIL import Image
-import torchvision.transforms as T
 import segmentation_models_pytorch as smp
 
 CLASS_NAMES = [
@@ -16,134 +15,132 @@ CLASS_NAMES = [
     "left_kidney","right_kidney","liver","stomach","pancreas"
 ]
 
-NORMAL_RANGES = {
-    "liver":       {"volume_cm3": (1200, 1800)},
-    "spleen":      {"volume_cm3": (100,  250)},
-    "left_kidney": {"volume_cm3": (120,  200)},
-    "right_kidney":{"volume_cm3": (120,  200)},
-    "pancreas":    {"volume_cm3": (60,   120)},
+# Approximate % of 224x224 slice a healthy organ occupies
+# Used only for "relative size" assessment — not volume
+EXPECTED_COVERAGE_PCT = {
+    "liver":        (15, 35),
+    "spleen":       (3,  10),
+    "left_kidney":  (2,  8),
+    "right_kidney": (2,  8),
+    "pancreas":     (1,  5),
+    "aorta":        (0.2, 2),
+    "gallbladder":  (0.5, 4),
+    "stomach":      (2,  12),
 }
 
-PIXEL_SPACING_MM = 0.7
-
-
 class SegmentationModel:
-    def __init__(self, checkpoint: str, device: str = "auto"):
-        if device == "auto":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
-
-        # Same architecture as training
-        self.model = smp.Unet(
+    def __init__(self, checkpoint: str, device: str = "cpu"):
+        self.device = torch.device(device)
+        self.model  = smp.Unet(
             encoder_name="resnet34",
-            encoder_weights=None,   # no imagenet here — loading your weights
+            encoder_weights=None,
             in_channels=3,
             classes=9,
         ).to(self.device)
 
-        ckpt_path = Path(checkpoint)
-        if ckpt_path.exists():
-            state = torch.load(ckpt_path, map_location=self.device, weights_only=True)
+        ckpt = Path(checkpoint)
+        if ckpt.exists():
+            state = torch.load(ckpt, map_location=self.device, weights_only=True)
             self.model.load_state_dict(state)
-            print(f"  Loaded checkpoint: {ckpt_path}")
+            print(f"  Loaded checkpoint: {ckpt}")
         else:
-            print(f"  ⚠️  Checkpoint not found at {ckpt_path} — running with random weights (demo mode)")
-
+            print(f"  WARNING: checkpoint not found at {ckpt}")
         self.model.eval()
 
     @torch.no_grad()
     def run(self, pil_image) -> dict:
-        """Run segmentation on a PIL image. Returns masks + anomalies."""
-        # Normalize same as training: per-slice min-max
         img_np = np.array(pil_image.convert("L")).astype(np.float32)
         mn, mx = img_np.min(), img_np.max()
         if mx - mn > 1e-8:
             img_np = (img_np - mn) / (mx - mn)
 
-        # Resize to 224×224, replicate to 3 channels
-        img_resized = np.array(
-            Image.fromarray(img_np).resize((224, 224), Image.BILINEAR)
-        )
+        img_r = np.array(Image.fromarray(img_np).resize((224,224), Image.BILINEAR))
         tensor = torch.from_numpy(
-            np.stack([img_resized, img_resized, img_resized], axis=0)
+            np.stack([img_r, img_r, img_r], axis=0)
         ).unsqueeze(0).float().to(self.device)
 
-        logits = self.model(tensor)
-        probs  = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
-        pred   = np.argmax(probs, axis=0)
+        probs = torch.softmax(self.model(tensor), dim=1).squeeze(0).cpu().numpy()
+        pred  = np.argmax(probs, axis=0)
+        total_pixels = 224 * 224
 
-        # Extract per-organ results
         organ_masks = {}
-        for class_id in range(1, 9):
-            name  = CLASS_NAMES[class_id]
-            mask  = (pred == class_id).astype(np.uint8)
+        for cid in range(1, 9):
+            name  = CLASS_NAMES[cid]
+            mask  = (pred == cid).astype(np.uint8)
             count = int(mask.sum())
-            if count > 50:
-                conf = float(probs[class_id][pred == class_id].mean())
+            if count > 30:
+                conf     = float(probs[cid][pred == cid].mean())
+                coverage = round(count / total_pixels * 100, 2)
                 organ_masks[name] = {
-                    "detected":    True,
-                    "pixel_count": count,
-                    "confidence":  round(conf, 3),
-                    "mask":        mask,
+                    "detected":       True,
+                    "pixel_count":    count,
+                    "coverage_pct":   coverage,
+                    "confidence":     round(conf, 3),
+                    "mask":           mask,
                 }
-
-        anomalies = self._detect_anomalies(pred, probs)
 
         return {
             "pred_mask":   pred,
             "probs":       probs,
             "organ_masks": organ_masks,
-            "anomalies":   anomalies,
+            "anomalies":   self._detect_anomalies(pred, probs),
         }
 
     def _detect_anomalies(self, pred, probs):
         anomalies = []
-        # Flag low-confidence predictions on detected organs as potential anomalies
-        for class_id in range(1, 9):
-            mask = (pred == class_id)
-            if mask.sum() > 50:
-                conf = float(probs[class_id][mask].mean())
+        for cid in range(1, 9):
+            mask = (pred == cid)
+            if mask.sum() > 30:
+                conf = float(probs[cid][mask].mean())
                 if conf < 0.55:
                     anomalies.append({
-                        "type":       f"uncertain_{CLASS_NAMES[class_id]}",
-                        "pixel_count": int(mask.sum()),
-                        "confidence":  round(conf, 3),
-                        "severity":    "low",
+                        "type":        f"low_confidence_{CLASS_NAMES[cid]}",
+                        "pixel_count":  int(mask.sum()),
+                        "confidence":   round(conf, 3),
+                        "severity":     "low",
                     })
         return anomalies
 
     def measure(self, seg_output: dict) -> dict:
-        px = PIXEL_SPACING_MM
+        """
+        Returns pixel coverage percentage only.
+        Volume measurement requires full DICOM series + pixel spacing metadata.
+        This is intentionally NOT computed to avoid misleading clinical values.
+        """
         measurements = {}
+        total = 224 * 224
         for organ, data in seg_output.get("organ_masks", {}).items():
-            area_mm2 = data["pixel_count"] * (px ** 2)
-            vol_cm3  = round((area_mm2 * px * 5) / 1000, 2)
+            coverage = data["pixel_count"] / total * 100
+            exp      = EXPECTED_COVERAGE_PCT.get(organ)
             measurements[organ] = {
-                "estimated_area_mm2":   round(area_mm2, 1),
-                "estimated_volume_cm3": vol_cm3,
-                "note": "Single-slice estimate only — not a true volume"
+                "coverage_pct":          round(coverage, 2),
+                "volume_cm3":            "N/A — requires full DICOM series",
+                "volume_note":           "Volumetry requires multi-slice DICOM with pixel spacing metadata",
             }
-        for a in seg_output.get("anomalies", []):
-            diam = round(2 * np.sqrt(a["pixel_count"] * (px**2) / np.pi), 1)
-            measurements[f"anomaly_{a['type']}"] = {"estimated_diameter_mm": diam}
         return measurements
 
     def compare_to_normals(self, measurements: dict) -> dict:
+        """
+        Compares slice coverage % against expected ranges.
+        Returns relative assessment only — NOT a clinical volume measurement.
+        """
         comparison = {}
-        for organ, norms in NORMAL_RANGES.items():
-            if organ not in measurements:
+        for organ, data in measurements.items():
+            coverage = data.get("coverage_pct", 0)
+            exp      = EXPECTED_COVERAGE_PCT.get(organ)
+            if not exp:
                 continue
-            vol  = measurements[organ].get("estimated_volume_cm3", 0)
-            lo,hi = norms["volume_cm3"]
-            if vol < lo:   status = "below_normal"
-            elif vol > hi: status = "above_normal"
-            else:          status = "normal"
+            lo, hi = exp
+            if coverage < lo * 0.5:
+                status = "smaller_than_expected"
+            elif coverage > hi * 1.5:
+                status = "larger_than_expected"
+            else:
+                status = "within_expected_range"
             comparison[organ] = {
-                "measured_volume_cm3": vol,
-                "normal_range":        [lo, hi],
-                "status":              status,
-                "deviation_pct":       round(((vol-(lo+hi)/2)/((lo+hi)/2))*100, 1),
-                "note":                "Single-slice estimate — interpret cautiously"
+                "coverage_pct":    coverage,
+                "expected_range":  f"{lo}–{hi}%",
+                "status":          status,
+                "note":            "Coverage-based only — not a volume measurement",
             }
         return comparison
