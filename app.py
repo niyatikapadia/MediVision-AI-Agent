@@ -1,9 +1,8 @@
 """
-MediVision Demo — Local Web App v2
-Full pipeline: segmentation → RAG → Ollama (llama3) → structured report
+MediVision Demo — Local Web App v3
+Full pipeline: segmentation → RAG (organ-aware) → Ollama → structured report
 Run: python app.py  →  http://localhost:7860
 """
-
 import json, time
 from pathlib import Path
 
@@ -28,11 +27,10 @@ agent = MediVisionAgent(rag=rag, ollama_model="llama3")
 print("Ready.\n")
 
 
-def run_pipeline(image, clinical_notes, progress=gr.Progress()):
+def run_pipeline(image, clinical_notes):
     if image is None:
         return None, "⬆️ Please upload a CT scan image first.", "[]", "No image provided."
 
-    progress(0.1, desc="🔬 Running organ segmentation...")
     t0 = time.time()
 
     seg_output   = seg_model.run(image)
@@ -40,13 +38,13 @@ def run_pipeline(image, clinical_notes, progress=gr.Progress()):
     measurements = seg_model.measure(seg_output)
     normals      = seg_model.compare_to_normals(measurements)
 
-    progress(0.45, desc="📚 Retrieving medical literature...")
-    organs_found = list(seg_output.get("organ_masks", {}).keys())
-    anomalies    = seg_output.get("anomalies", [])
-    query_parts  = organs_found[:3] + [clinical_notes or ""]
-    rag_results  = rag.search(" ".join(query_parts), top_k=3)
+    detected_organs = list(seg_output.get("organ_masks", {}).keys())
+    rag_results = rag.search(
+        query=" ".join(detected_organs) + " " + (clinical_notes or ""),
+        detected_organs=detected_organs,
+        top_k=3
+    )
 
-    progress(0.65, desc="🤖 Agent reasoning via Llama3 (30-60s)...")
     report = agent.reason(
         seg_output=seg_output, measurements=measurements,
         normals=normals, rag_results=rag_results,
@@ -54,13 +52,14 @@ def run_pipeline(image, clinical_notes, progress=gr.Progress()):
     )
 
     elapsed = time.time() - t0
-    progress(1.0, desc=f"✅ Done in {elapsed:.1f}s")
 
     findings_md = _format_findings(seg_output, measurements, normals, elapsed)
-    rag_json    = json.dumps(
-        [{"title": r["title"], "source": r.get("source",""),
-          "abstract": r.get("abstract","")[:120]+"..."}
-         for r in rag_results], indent=2)
+    rag_json    = json.dumps([{
+        "title":        r["title"],
+        "source":       r.get("source",""),
+        "match_reason": r.get("match_reason",""),
+        "abstract":     r.get("abstract","")[:120]+"..."
+    } for r in rag_results], indent=2)
     report_text = report.get("report_text", "No report generated.")
 
     return overlay_img, findings_md, rag_json, report_text
@@ -73,100 +72,112 @@ def _format_findings(seg_output, measurements, normals, elapsed):
     if not organs:
         return (
             "### No organs detected\n\n"
-            "The model did not detect any organs in this image.\n\n"
-            "**Try uploading a real CT scan** — the sample synthetic images "
-            "have very low contrast and may not produce good segmentation.\n\n"
-            f"*Pipeline ran in {elapsed:.1f}s*"
+            "Upload a real abdominal CT scan slice (grayscale, axial view).\n\n"
+            f"*Ran in {elapsed:.1f}s*"
         )
 
-    lines = [f"### Detected organs ({len(organs)}) — {elapsed:.1f}s\n"]
+    lines = [
+        f"### {len(organs)} organs detected &nbsp; · &nbsp; {elapsed:.1f}s\n",
+        "> ⚠️ **Single-slice analysis only.** "
+        "Coverage % shown — volume requires full DICOM series.\n"
+    ]
+
     for organ, data in organs.items():
-        conf   = data.get("confidence", 0)
-        vol    = measurements.get(organ, {}).get("estimated_volume_cm3", "—")
-        status = normals.get(organ, {}).get("status", "—")
-        emoji  = "✅" if status == "normal" else ("⚠️" if status != "—" else "🔵")
-        lines.append(f"{emoji} **{organ}** | conf: {conf:.2f} | vol: {vol} cm³ | {status}")
+        conf     = data.get("confidence", 0)
+        coverage = measurements.get(organ, {}).get("coverage_pct", 0)
+        status   = normals.get(organ, {}).get("status", "—")
+        exp      = normals.get(organ, {}).get("expected_range", "—")
+
+        if status == "within_expected_range":
+            emoji = "✅"
+        elif status in ("smaller_than_expected","larger_than_expected"):
+            emoji = "⚠️"
+        else:
+            emoji = "🔵"
+
+        lines.append(
+            f"{emoji} **{organ}** &nbsp; "
+            f"conf: `{conf:.2f}` &nbsp; "
+            f"coverage: `{coverage:.1f}%` &nbsp; "
+            f"expected: `{exp}` &nbsp; "
+            f"*{status}*"
+        )
 
     if anomalies:
-        lines.append("\n### ⚠️ Anomalies flagged\n")
+        lines.append("\n### ⚠️ Flagged for review\n")
         for a in anomalies:
-            lines.append(f"- **{a['type']}** | severity: {a['severity']} | conf: {a['confidence']:.2f}")
+            lines.append(f"- **{a['type']}** | conf: {a['confidence']:.2f}")
 
     lines.append(
         "\n---\n"
-        "*⚠️ Research prototype. Not for clinical use. "
-        "Single-slice volume estimates only. Requires expert radiologist review.*"
+        "*Research prototype — not for clinical use. "
+        "Expert radiologist review required.*"
     )
     return "\n".join(lines)
 
 
-# ── UI ────────────────────────────────────────────────────────
 with gr.Blocks(title="MediVision AI Agent") as demo:
 
     gr.HTML("""
-    <div style="text-align:center;padding:24px 0 8px">
-      <h1 style="font-size:2em;margin:0">🧠 MediVision AI Agent</h1>
-      <p style="color:#888;margin:6px 0 0;font-size:1em">
-        UNet-ResNet34 segmentation (Dice 0.776) &nbsp;·&nbsp;
-        Medical RAG &nbsp;·&nbsp; Llama3 local reasoning
+    <div style="text-align:center;padding:20px 0 6px">
+      <h1 style="font-size:1.9em;margin:0">🧠 MediVision AI Agent</h1>
+      <p style="color:#888;margin:6px 0 0">
+        UNet-ResNet34 · Synapse CT · Test Dice 0.776 &nbsp;|&nbsp;
+        Medical RAG · 12 documents &nbsp;|&nbsp;
+        Llama3 · fully local
       </p>
     </div>
     """)
 
     gr.HTML("""
-    <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;
-                padding:10px 16px;margin:0 0 16px;font-size:0.9em">
-      ⚠️ <strong>Research prototype — not for clinical use.</strong>
+    <div style="background:#fff3cd;border-left:4px solid #ffc107;
+                padding:10px 16px;margin:0 0 14px;font-size:0.88em">
+      ⚠️ <strong>Research prototype.</strong>
+      Not validated for clinical use. Single 2D slice analysis only.
+      Volume measurements require full DICOM series.
       All outputs require expert radiologist review.
-      Agent reasoning takes <strong>30–90 seconds</strong> locally — this is normal.
     </div>
     """)
 
     with gr.Row():
         with gr.Column(scale=1):
-            gr.Markdown("### 📤 Input")
+            gr.Markdown("### Upload CT Slice")
             image_input = gr.Image(
-                label="CT Scan Slice",
+                label="Abdominal CT axial slice (PNG/JPG)",
                 type="pil",
-                height=280,
+                height=300,
             )
             clinical_notes = gr.Textbox(
                 label="Clinical Notes (optional)",
-                placeholder="e.g. 58yo male, elevated LFTs, abdominal discomfort",
+                placeholder="e.g. 58yo male, elevated LFTs, 3 weeks abdominal discomfort",
                 lines=2,
             )
-            run_btn = gr.Button(
-                "▶ Run Full Pipeline",
-                variant="primary",
-                size="lg"
-            )
+            run_btn = gr.Button("▶ Run Full Pipeline", variant="primary", size="lg")
             gr.Markdown(
-                "**Tip:** Use a real CT scan PNG for best results.\n\n"
-                "Sample images in `data/sample_data/` work but may show "
-                "few organs due to low contrast."
+                "**What to upload:** A real abdominal CT scan axial slice.\n\n"
+                "**Not:** Photos, MRI, or chest CT.\n\n"
+                "**Agent reasoning takes 30–90s** — this is normal for local Llama3."
             )
 
         with gr.Column(scale=2):
-            gr.Markdown("### 🖼 Segmentation Overlay")
+            gr.Markdown("### Segmentation Overlay")
             overlay_output = gr.Image(
-                label="Organ masks overlaid on scan",
-                height=280
+                label="Organ masks — coloured regions = detected organs",
+                height=330
             )
             with gr.Tabs():
                 with gr.Tab("📋 Findings"):
                     findings_output = gr.Markdown(
-                        value="*Upload an image and click Run to see findings.*"
+                        value="*Upload a CT scan and click Run.*"
                     )
                 with gr.Tab("📚 Retrieved Evidence"):
-                    rag_output = gr.Code(
-                        language="json",
-                        label="Top medical literature retrieved"
-                    )
+                    rag_output = gr.Code(language="json",
+                        label="Organ-matched medical literature")
                 with gr.Tab("📄 Agent Report"):
                     report_output = gr.Textbox(
-                        label="Llama3 diagnostic report",
-                        lines=14,
-                        placeholder="Report will appear here after pipeline runs..."
+                        label="Llama3 structured diagnostic report",
+                        lines=16,
+                        placeholder="Report appears here after pipeline runs..."
                     )
 
     run_btn.click(
@@ -176,20 +187,17 @@ with gr.Blocks(title="MediVision AI Agent") as demo:
     )
 
     gr.Markdown("""---
-**How it works:**
-1. **Segmentation** — UNet-ResNet34 trained on Synapse CT dataset (Test Dice 0.776, 150 epochs on Kaggle P100)
-2. **RAG** — BM25 keyword retrieval over medical literature knowledge base
-3. **Agent** — Llama3 7B via Ollama (local, fully offline, no API key)
+**Pipeline:** Segmentation (UNet-ResNet34, Dice 0.776 on Synapse benchmark)
+→ RAG (BM25, 12 medical documents, organ-aware routing)
+→ Agent (Llama3 7B via Ollama, fully local, no API key)
 
-Built by [Niyati Kapadia](https://niyatinikunjkapadia.wixsite.com/portfolio) · 
-[GitHub](https://github.com/niyatikapadia/MediVision-AI-Agent) · 
+**Honest limitations:** Single 2D slice · Small RAG KB · Volume requires DICOM · Not clinically validated
+
+Built by [Niyati Kapadia](https://niyatinikunjkapadia.wixsite.com/portfolio) ·
+[GitHub](https://github.com/niyatikapadia/MediVision-AI-Agent) ·
 [LinkedIn](https://www.linkedin.com/in/niyati-nikunj-k-ab47861a4/)
 """)
 
 if __name__ == "__main__":
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        inbrowser=True,
-        share=False,
-    )
+    demo.launch(server_name="0.0.0.0", server_port=7860,
+                inbrowser=True, share=False)
