@@ -1,8 +1,10 @@
 """
-MediVision Demo v4 — real volume estimates with uncertainty
+MediVision Demo — Local Web App v4
+Full pipeline: segmentation -> RAG -> Ollama -> structured report
+Run: python app.py  ->  http://localhost:7860
 """
-import json, time
-from pathlib import Path
+import json
+import time
 
 import gradio as gr
 import numpy as np
@@ -27,7 +29,7 @@ print("Ready.\n")
 
 def run_pipeline(image, clinical_notes):
     if image is None:
-        return None, "⬆️ Please upload a CT scan image first.", "[]", "No image provided."
+        return None, "Please upload a CT scan image first.", "[]", "No image provided."
 
     t0 = time.time()
 
@@ -44,113 +46,111 @@ def run_pipeline(image, clinical_notes):
     )
 
     report = agent.reason(
-        seg_output=seg_output, measurements=measurements,
-        normals=normals, rag_results=rag_results,
+        seg_output=seg_output,
+        measurements=measurements,
+        normals=normals,
+        rag_results=rag_results,
         clinical_notes=clinical_notes or "No clinical notes provided.",
     )
 
     elapsed = time.time() - t0
-    findings_md = _format_findings(seg_output, measurements, normals, elapsed)
-    rag_json    = json.dumps([{
+    findings_md = format_findings(seg_output, measurements, normals, elapsed)
+    rag_json = json.dumps([{
         "title":        r["title"],
-        "source":       r.get("source",""),
-        "match_reason": r.get("match_reason",""),
-        "abstract":     r.get("abstract","")[:120]+"..."
+        "source":       r.get("source", ""),
+        "match_reason": r.get("match_reason", ""),
+        "abstract":     r.get("abstract", "")[:120] + "..."
     } for r in rag_results], indent=2)
 
-    return overlay_img, findings_md, rag_json, report.get("report_text","")
+    return overlay_img, findings_md, rag_json, report.get("report_text", "")
 
 
-def _format_findings(seg_output, measurements, normals, elapsed):
+def format_findings(seg_output, measurements, normals, elapsed):
     organs    = seg_output.get("organ_masks", {})
     anomalies = seg_output.get("anomalies", [])
 
     if not organs:
-        return (
-            "### No organs detected
-
-"
-            "Upload a real abdominal CT scan slice (grayscale, axial view).
-
-"
-            f"*Ran in {elapsed:.1f}s*"
-        )
+        lines = [
+            "### No organs detected",
+            "",
+            "Upload a real abdominal CT scan slice (grayscale, axial view).",
+            "",
+            "Ran in {:.1f}s".format(elapsed)
+        ]
+        return "\n".join(lines)
 
     lines = [
-        f"### {len(organs)} organs detected &nbsp;·&nbsp; {elapsed:.1f}s
-",
-        "> 📐 **Single-slice cross-sectional area** shown (cm²). "
-        "This is the correct measurement for 2D CT analysis. "
-        "Whole-organ volumetry requires the full DICOM series.
-"
+        "### {} organs detected  |  {:.1f}s".format(len(organs), elapsed),
+        "",
+        "> Cross-sectional area (cm2) shown — correct metric for single-slice CT analysis.",
+        "> Whole-organ volumetry requires the full DICOM series.",
+        "",
     ]
 
     for organ, data in organs.items():
-        conf = data.get("confidence", 0)
-        norm = normals.get(organ, {})
-        meas = measurements.get(organ, {})
-        status = norm.get("status", "—")
+        conf   = data.get("confidence", 0)
+        norm   = normals.get(organ, {})
+        status = norm.get("status", "detected")
 
-        # Build measurement string
         if "area_cm2" in norm:
             area    = norm["area_cm2"]
             rng     = norm.get("area_range_cm2", (area, area))
             ref_rng = norm.get("reference_range_cm2", [])
             level   = norm.get("anatomical_level", "")
-            meas_str = f"area: `{area} cm²` (range {rng[0]}–{rng[1]})"
-            ref_str  = f"ref: {ref_rng[0]}–{ref_rng[1]} cm² at {level}" if ref_rng else ""
+            meas_str = "area: {} cm2 (range {}-{})".format(area, rng[0], rng[1])
+            ref_str  = "ref: {}-{} cm2 at {}".format(ref_rng[0], ref_rng[1], level) if ref_rng else ""
         elif "diameter_mm" in norm:
             diam    = norm["diameter_mm"]
             rng     = norm.get("diam_range_mm", (diam, diam))
             ref_rng = norm.get("reference_range_mm", [])
-            meas_str = f"diameter: `{diam}mm` (range {rng[0]}–{rng[1]}mm)"
-            ref_str  = f"ref: {ref_rng[0]}–{ref_rng[1]}mm" if ref_rng else ""
+            meas_str = "diameter: {}mm (range {}-{}mm)".format(diam, rng[0], rng[1])
+            ref_str  = "ref: {}-{}mm".format(ref_rng[0], ref_rng[1]) if ref_rng else ""
         else:
             meas_str = ""
             ref_str  = ""
 
-        if "below_normal" in status:   emoji = "⚠️"
-        elif "above_normal" in status: emoji = "🔴"
-        elif status == "normal":       emoji = "✅"
-        elif "borderline" in status:   emoji = "🟡"
-        else:                          emoji = "🔵"
+        if "below_normal" in status:
+            emoji = "WARNING"
+        elif "above_normal" in status:
+            emoji = "HIGH"
+        elif status == "normal":
+            emoji = "OK"
+        elif "borderline" in status:
+            emoji = "BORDERLINE"
+        else:
+            emoji = "DETECTED"
 
-        ref_note = f" · *{ref_str}*" if ref_str else ""
+        ref_note = " | {}".format(ref_str) if ref_str else ""
         lines.append(
-            f"{emoji} **{organ}** &nbsp; "
-            f"conf: `{conf:.2f}` &nbsp; "
-            f"{meas_str}{ref_note} &nbsp; "
-            f"*{status}*"
+            "[{}] {} | conf: {:.2f} | {} {} | {}".format(
+                emoji, organ, conf, meas_str, ref_note, status
+            )
         )
 
     if anomalies:
-        lines.append("
-### ⚠️ Flagged
-")
+        lines.append("")
+        lines.append("### Flagged for review")
         for a in anomalies:
-            lines.append(f"- **{a['type']}** | conf: {a['confidence']:.2f}")
+            lines.append("- {} | conf: {:.2f}".format(a["type"], a["confidence"]))
 
-    lines.append(
-        "
----
-"
-        "*Cross-sectional area estimated from pixel coverage × assumed pixel spacing "
-        f"(FOV=370mm/512px → 0.684mm/px). Uncertainty ±25%. "
-        "Not a clinical measurement. Expert radiologist review required.*"
-    )
-    return "
-".join(lines)
+    lines.extend([
+        "",
+        "---",
+        "Cross-sectional area estimated from pixel coverage x assumed pixel spacing",
+        "(FOV=370mm / 512px = 0.684mm/px). Uncertainty +-25%.",
+        "Not a clinical measurement. Expert radiologist review required."
+    ])
+
+    return "\n".join(lines)
 
 
 with gr.Blocks(title="MediVision AI Agent") as demo:
 
     gr.HTML("""
     <div style="text-align:center;padding:20px 0 6px">
-      <h1 style="font-size:1.9em;margin:0">🧠 MediVision AI Agent</h1>
+      <h1 style="font-size:1.9em;margin:0">MediVision AI Agent</h1>
       <p style="color:#888;margin:6px 0 0">
-        UNet-ResNet34 · Synapse CT · Test Dice 0.776 &nbsp;|&nbsp;
-        Medical RAG · 12 documents &nbsp;|&nbsp;
-        Llama3 · fully local
+        UNet-ResNet34 (Dice 0.776) | Medical RAG (12 docs) | Llama3 local
       </p>
     </div>
     """)
@@ -158,9 +158,8 @@ with gr.Blocks(title="MediVision AI Agent") as demo:
     gr.HTML("""
     <div style="background:#fff3cd;border-left:4px solid #ffc107;
                 padding:10px 16px;margin:0 0 14px;font-size:0.88em">
-      ⚠️ <strong>Research prototype.</strong>
-      Not validated for clinical use. Single 2D slice analysis.
-      Volumes are <em>estimated</em> assuming standard CT protocol (±30% uncertainty).
+      Research prototype. Not validated for clinical use.
+      Single 2D slice analysis. Cross-sectional area estimated (+-25%).
       All outputs require expert radiologist review.
     </div>
     """)
@@ -170,31 +169,35 @@ with gr.Blocks(title="MediVision AI Agent") as demo:
             gr.Markdown("### Upload CT Slice")
             image_input = gr.Image(
                 label="Abdominal CT axial slice (PNG/JPG)",
-                type="pil", height=300,
+                type="pil",
+                height=300,
             )
             clinical_notes = gr.Textbox(
                 label="Clinical Notes (optional)",
                 placeholder="e.g. 58yo male, elevated LFTs, abdominal discomfort",
                 lines=2,
             )
-            run_btn = gr.Button("▶ Run Full Pipeline", variant="primary", size="lg")
+            run_btn = gr.Button("Run Full Pipeline", variant="primary", size="lg")
             gr.Markdown(
-                "**What to upload:** A real abdominal CT axial slice.\n\n"
-                "**Agent reasoning:** 30–90s locally (Llama3 7B)."
+                "Upload a real abdominal CT axial slice.\n\n"
+                "Agent reasoning takes 30-90s locally (Llama3 7B)."
             )
 
         with gr.Column(scale=2):
             gr.Markdown("### Segmentation Overlay")
             overlay_output = gr.Image(
-                label="Organ masks — colours = detected organs, numbers = confidence",
+                label="Organ masks — colours = organs, numbers = confidence",
                 height=340
             )
             with gr.Tabs():
-                with gr.Tab("📋 Findings"):
-                    findings_output = gr.Markdown(value="*Upload a CT scan and click Run.*")
-                with gr.Tab("📚 Retrieved Evidence"):
-                    rag_output = gr.Code(language="json", label="Organ-matched medical literature")
-                with gr.Tab("📄 Agent Report"):
+                with gr.Tab("Findings"):
+                    findings_output = gr.Markdown(value="Upload a CT scan and click Run.")
+                with gr.Tab("Retrieved Evidence"):
+                    rag_output = gr.Code(
+                        language="json",
+                        label="Organ-matched medical literature"
+                    )
+                with gr.Tab("Agent Report"):
                     report_output = gr.Textbox(
                         label="Llama3 structured diagnostic report",
                         lines=16,
@@ -208,18 +211,19 @@ with gr.Blocks(title="MediVision AI Agent") as demo:
     )
 
     gr.Markdown("""---
-**Pipeline:** Segmentation (UNet-ResNet34, Dice 0.776)
-→ RAG (BM25, 12 documents, organ-aware routing)
-→ Agent (Llama3 7B via Ollama, fully local)
+Pipeline: Segmentation (UNet-ResNet34, Dice 0.776) -> RAG (BM25, 12 docs, organ-aware) -> Agent (Llama3 via Ollama, local)
 
-**Volume methodology:** Pixel spacing estimated from standard abdominal CT FOV (370mm/512px).
-Slice thickness assumed 5mm. Uncertainty ±30%. For clinical use, provide DICOM metadata.
+Volume methodology: Pixel spacing estimated from standard abdominal CT FOV (370mm/512px). Uncertainty +-25%. Provide DICOM for definitive measurements.
 
-Built by [Niyati Kapadia](https://niyatinikunjkapadia.wixsite.com/portfolio) ·
-[GitHub](https://github.com/niyatikapadia/MediVision-AI-Agent) ·
+Built by [Niyati Kapadia](https://niyatinikunjkapadia.wixsite.com/portfolio) |
+[GitHub](https://github.com/niyatikapadia/MediVision-AI-Agent) |
 [LinkedIn](https://www.linkedin.com/in/niyati-nikunj-k-ab47861a4/)
 """)
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860,
-                inbrowser=True, share=False)
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        inbrowser=True,
+        share=False,
+    )
