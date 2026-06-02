@@ -67,40 +67,49 @@ def _format_findings(seg_output, measurements, normals, elapsed):
 
     if not organs:
         return (
-            "### No organs detected\n\n"
-            "Upload a real abdominal CT scan slice (grayscale, axial view).\n\n"
+            "### No organs detected
+
+"
+            "Upload a real abdominal CT scan slice (grayscale, axial view).
+
+"
             f"*Ran in {elapsed:.1f}s*"
         )
 
     lines = [
-        f"### {len(organs)} organs detected &nbsp;·&nbsp; {elapsed:.1f}s\n",
-        "> ⚠️ Volumes estimated assuming standard abdominal CT protocol "
-        "(FOV=370mm, slice=5mm). Uncertainty ±30%. "
-        "For definitive volumetry, use DICOM with pixel spacing metadata.\n"
+        f"### {len(organs)} organs detected &nbsp;·&nbsp; {elapsed:.1f}s
+",
+        "> 📐 **Single-slice cross-sectional area** shown (cm²). "
+        "This is the correct measurement for 2D CT analysis. "
+        "Whole-organ volumetry requires the full DICOM series.
+"
     ]
 
     for organ, data in organs.items():
-        conf   = data.get("confidence", 0)
-        norm   = normals.get(organ, {})
+        conf = data.get("confidence", 0)
+        norm = normals.get(organ, {})
+        meas = measurements.get(organ, {})
         status = norm.get("status", "—")
 
-        if "estimated_volume_cm3" in norm:
-            vol     = norm["estimated_volume_cm3"]
-            rng     = norm.get("range_cm3", (vol, vol))
-            ref_rng = norm.get("clinical_range_cm3", [])
-            vol_str = f"~{vol} cm³ (range {rng[0]}–{rng[1]})"
-            ref_str = f"normal: {ref_rng[0]}–{ref_rng[1]} cm³" if ref_rng else ""
-        elif "estimated_diameter_mm" in norm:
-            diam    = norm["estimated_diameter_mm"]
-            vol_str = f"~{diam}mm diameter"
-            ref_str = f"normal: {norm.get('clinical_range_mm',[])[0]}–{norm.get('clinical_range_mm',[])[1]}mm" if norm.get("clinical_range_mm") else ""
+        # Build measurement string
+        if "area_cm2" in norm:
+            area    = norm["area_cm2"]
+            rng     = norm.get("area_range_cm2", (area, area))
+            ref_rng = norm.get("reference_range_cm2", [])
+            level   = norm.get("anatomical_level", "")
+            meas_str = f"area: `{area} cm²` (range {rng[0]}–{rng[1]})"
+            ref_str  = f"ref: {ref_rng[0]}–{ref_rng[1]} cm² at {level}" if ref_rng else ""
+        elif "diameter_mm" in norm:
+            diam    = norm["diameter_mm"]
+            rng     = norm.get("diam_range_mm", (diam, diam))
+            ref_rng = norm.get("reference_range_mm", [])
+            meas_str = f"diameter: `{diam}mm` (range {rng[0]}–{rng[1]}mm)"
+            ref_str  = f"ref: {ref_rng[0]}–{ref_rng[1]}mm" if ref_rng else ""
         else:
-            meas    = measurements.get(organ, {})
-            vol     = meas.get("volume_cm3", "?")
-            vol_str = f"~{vol} cm³ (est.)"
-            ref_str = ""
+            meas_str = ""
+            ref_str  = ""
 
-        if "below_normal" in status:  emoji = "⚠️"
+        if "below_normal" in status:   emoji = "⚠️"
         elif "above_normal" in status: emoji = "🔴"
         elif status == "normal":       emoji = "✅"
         elif "borderline" in status:   emoji = "🟡"
@@ -110,21 +119,27 @@ def _format_findings(seg_output, measurements, normals, elapsed):
         lines.append(
             f"{emoji} **{organ}** &nbsp; "
             f"conf: `{conf:.2f}` &nbsp; "
-            f"{vol_str}{ref_note} &nbsp; "
+            f"{meas_str}{ref_note} &nbsp; "
             f"*{status}*"
         )
 
     if anomalies:
-        lines.append("\n### ⚠️ Flagged\n")
+        lines.append("
+### ⚠️ Flagged
+")
         for a in anomalies:
             lines.append(f"- **{a['type']}** | conf: {a['confidence']:.2f}")
 
     lines.append(
-        "\n---\n"
-        "*Volumes estimated from pixel coverage assuming standard CT protocol. "
+        "
+---
+"
+        "*Cross-sectional area estimated from pixel coverage × assumed pixel spacing "
+        f"(FOV=370mm/512px → 0.684mm/px). Uncertainty ±25%. "
         "Not a clinical measurement. Expert radiologist review required.*"
     )
-    return "\n".join(lines)
+    return "
+".join(lines)
 
 
 with gr.Blocks(title="MediVision AI Agent") as demo:
