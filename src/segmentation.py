@@ -62,9 +62,9 @@ UNCERTAINTY_PCT  = 25      # ±25% for unknown scanner protocol
 class SegmentationModel:
     def __init__(self, checkpoint: str, device: str = "cpu"):
         self.device   = torch.device(device)
-        self.img_size = 224
+        self.img_size = 512  # v3 trained at 512px
         # Scale pixel spacing to our 224px inference size
-        self.px_mm    = PIXEL_SPACING_MM * (NATIVE_SIZE_PX / self.img_size)
+        self.px_mm    = PIXEL_SPACING_MM  # v3 runs at native 512px — no scaling needed
 
         self.model = smp.Unet(
             encoder_name="resnet34",
