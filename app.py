@@ -17,7 +17,7 @@ from src.visualize import draw_segmentation_overlay
 
 print("Loading segmentation model...")
 seg_model = SegmentationModel(
-    checkpoint="models/unet_resnet34_v3_best.pth",
+    checkpoint="models/unet_resnet34_v31_best.pth",
     device="cpu"
 )
 print("Loading RAG pipeline...")
