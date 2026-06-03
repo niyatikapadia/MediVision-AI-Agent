@@ -79,15 +79,43 @@ def format_findings(seg_output, measurements, normals, elapsed):
         ]
         return "\n".join(lines)
 
+    # Separate valid measurements from segmentation warnings
+    valid   = {}
+    warned  = {}
+    for organ, norm in normals.items():
+        if norm.get("status") == "SEGMENTATION_WARNING":
+            warned[organ] = norm
+        else:
+            valid[organ] = norm
+
     lines = [
         "### {} organs detected  |  {:.1f}s".format(len(organs), elapsed),
         "",
-        "> Cross-sectional area (cm2) shown — correct metric for single-slice CT analysis.",
+        "> Cross-sectional area (cm2) — single-slice CT analysis.",
         "> Whole-organ volumetry requires the full DICOM series.",
         "",
     ]
 
+    # Show segmentation warnings first and prominently
+    if warned:
+        lines.append("**Segmentation Quality Warnings**")
+        lines.append("")
+        for organ, norm in warned.items():
+            conf = organs.get(organ, {}).get("confidence", 0)
+            lines.append(
+                "[SEG WARNING] {} | conf: {:.2f} | {}".format(
+                    organ, conf,
+                    norm.get("warning", "Measurement unreliable — do not use clinically")
+                )
+            )
+        lines.append("")
+        lines.append("**Usable Measurements**")
+        lines.append("")
+
+    # Show valid measurements
     for organ, data in organs.items():
+        if organ in warned:
+            continue
         conf   = data.get("confidence", 0)
         norm   = normals.get(organ, {})
         status = norm.get("status", "detected")
@@ -98,7 +126,7 @@ def format_findings(seg_output, measurements, normals, elapsed):
             ref_rng = norm.get("reference_range_cm2", [])
             level   = norm.get("anatomical_level", "")
             meas_str = "area: {} cm2 (range {}-{})".format(area, rng[0], rng[1])
-            ref_str  = "ref: {}-{} cm2 at {}".format(ref_rng[0], ref_rng[1], level) if ref_rng else ""
+            ref_str  = "ref: {}-{} cm2".format(ref_rng[0], ref_rng[1]) if ref_rng else ""
         elif "diameter_mm" in norm:
             diam    = norm["diameter_mm"]
             rng     = norm.get("diam_range_mm", (diam, diam))
@@ -109,36 +137,31 @@ def format_findings(seg_output, measurements, normals, elapsed):
             meas_str = ""
             ref_str  = ""
 
-        if "below_normal" in status:
-            emoji = "WARNING"
-        elif "above_normal" in status:
-            emoji = "HIGH"
-        elif status == "normal":
-            emoji = "OK"
-        elif "borderline" in status:
-            emoji = "BORDERLINE"
-        else:
-            emoji = "DETECTED"
+        if "below_normal" in status:    label = "BELOW"
+        elif "above_normal" in status:  label = "ABOVE"
+        elif status == "normal":        label = "OK"
+        elif "borderline" in status:    label = "BORDERLINE"
+        else:                           label = "DETECTED"
 
         ref_note = " | {}".format(ref_str) if ref_str else ""
         lines.append(
-            "[{}] {} | conf: {:.2f} | {} {} | {}".format(
-                emoji, organ, conf, meas_str, ref_note, status
+            "[{}] {} | conf: {:.2f} | {}{}".format(
+                label, organ, conf, meas_str, ref_note
             )
         )
 
     if anomalies:
         lines.append("")
-        lines.append("### Flagged for review")
+        lines.append("**Low Confidence Flags**")
         for a in anomalies:
             lines.append("- {} | conf: {:.2f}".format(a["type"], a["confidence"]))
 
     lines.extend([
         "",
         "---",
-        "Cross-sectional area estimated from pixel coverage x assumed pixel spacing",
-        "(FOV=370mm / 512px = 0.684mm/px). Uncertainty +-25%.",
-        "Not a clinical measurement. Expert radiologist review required."
+        "Area estimated: FOV=370mm / 512px = 0.684mm/px, uncertainty +-25%.",
+        "Segmentation warnings indicate likely model errors — not clinical findings.",
+        "Expert radiologist review required."
     ])
 
     return "\n".join(lines)
