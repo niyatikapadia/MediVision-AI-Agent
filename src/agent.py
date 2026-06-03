@@ -1,30 +1,50 @@
 """
-MediVision Agent — Ollama local LLM reasoning.
-Honest about what is and is not measured.
+MediVision Agent — Ollama local LLM.
+Strict prompt: findings and observations only.
+No disease diagnoses. No treatment recommendations.
 """
 from __future__ import annotations
 import requests
 
-SYSTEM_PROMPT = """You are MediVision, a medical imaging AI assistant (research prototype).
+SYSTEM_PROMPT = """You are MediVision, a medical imaging AI assistant.
+You are a RESEARCH PROTOTYPE. You must never make clinical diagnoses.
 
-You receive:
-- CT scan organ segmentation results (detection confidence + slice coverage %)
-- Retrieved medical literature
-- Clinical notes
+Your role is strictly to:
+1. Describe what was detected in the segmentation results
+2. Note which measurements are within or outside reference ranges
+3. Flag any segmentation quality warnings
+4. Recommend expert radiologist review
 
-IMPORTANT CONSTRAINTS:
-- Volume measurements are NOT available (requires full DICOM series)
-- You only have one 2D slice — this is a limitation you must acknowledge
-- You are a research prototype — always recommend expert radiologist review
+You must NOT:
+- Diagnose any disease (e.g. do NOT say "CKD", "hepatitis", "cancer", "cirrhosis")
+- Recommend any treatment
+- Make prognostic statements
+- Interpret findings as definitive pathology
 
-Produce a structured report with these sections:
-**Key Findings** — what was detected, with confidence levels
-**Clinical Observations** — what the coverage patterns suggest
-**Differential Considerations** — 2-3 possibilities with reasoning
-**Recommended Next Steps** — specific, actionable
-**Limitations** — what this single-slice analysis cannot tell us
+Structure your response as:
 
-End with: DISCLAIMER: Research prototype. Not for clinical use. Requires expert radiologist review."""
+**Imaging Observations**
+Describe detected organs and their measured cross-sectional areas.
+Note any SEGMENTATION_WARNING flags explicitly.
+
+**Measurements vs Reference Ranges**
+List each organ: measured area, reference range, status (normal/borderline/above/below).
+For SEGMENTATION_WARNING organs: state the measurement cannot be used.
+
+**Segmentation Quality Notes**
+Note any organs with low confidence or anatomical warnings.
+
+**Recommended Next Steps**
+Always include:
+- Expert radiologist review required
+- Full DICOM series for volumetric measurements
+- Clinical correlation with patient history
+
+**Disclaimer**
+DISCLAIMER: Research prototype. Not for clinical use.
+Single 2D slice analysis only. Not validated clinically.
+Expert radiologist review required before any clinical decision."""
+
 
 class MediVisionAgent:
     def __init__(self, rag, ollama_model: str = "llama3",
@@ -46,8 +66,11 @@ class MediVisionAgent:
         except Exception as e:
             print(f"  Ollama not reachable: {e}")
 
-    def reason(self, seg_output, measurements, normals, rag_results, clinical_notes) -> dict:
-        prompt = self._build_prompt(seg_output, measurements, normals, rag_results, clinical_notes)
+    def reason(self, seg_output, measurements, normals,
+               rag_results, clinical_notes) -> dict:
+        prompt = self._build_prompt(
+            seg_output, measurements, normals, rag_results, clinical_notes
+        )
         try:
             resp = requests.post(
                 f"{self.ollama_url}/api/generate",
@@ -56,7 +79,11 @@ class MediVisionAgent:
                     "prompt":  prompt,
                     "system":  SYSTEM_PROMPT,
                     "stream":  False,
-                    "options": {"num_predict": 400, "temperature": 0.2, "top_p": 0.9}
+                    "options": {
+                        "num_predict": 500,
+                        "temperature": 0.1,  # low temp = more conservative output
+                        "top_p": 0.9
+                    }
                 },
                 timeout=180,
             )
@@ -65,46 +92,78 @@ class MediVisionAgent:
             text = self._fallback(normals, seg_output, str(e))
         return {"report_text": text, "model": self.model}
 
-    def _build_prompt(self, seg_output, measurements, normals, rag_results, clinical_notes):
+    def _build_prompt(self, seg_output, measurements, normals,
+                      rag_results, clinical_notes):
         organs    = seg_output.get("organ_masks", {})
         anomalies = seg_output.get("anomalies", [])
 
-        organ_lines = "\n".join(
-            f"  {name}: confidence={d['confidence']:.2f}, "
-            f"slice_coverage={measurements.get(name,{}).get('coverage_pct',0):.1f}%, "
-            f"size_assessment={normals.get(name,{}).get('status','unknown')}"
-            for name, d in organs.items()
-        ) or "  No organs detected"
+        organ_lines = []
+        warnings    = []
+        for name, data in organs.items():
+            norm   = normals.get(name, {})
+            status = norm.get("status", "unknown")
+            conf   = data["confidence"]
+
+            if status == "SEGMENTATION_WARNING":
+                warnings.append(
+                    f"  SEGMENTATION WARNING — {name}: {norm.get('warning','')}"
+                )
+            elif "area_cm2" in norm:
+                area    = norm["area_cm2"]
+                ref_rng = norm.get("reference_range_cm2", [])
+                organ_lines.append(
+                    f"  {name}: conf={conf:.2f}, area={area}cm2 "
+                    f"(ref {ref_rng[0]}-{ref_rng[1]}cm2), status={status}"
+                )
+            elif "diameter_mm" in norm:
+                diam    = norm["diameter_mm"]
+                ref_rng = norm.get("reference_range_mm", [])
+                organ_lines.append(
+                    f"  {name}: conf={conf:.2f}, diameter={diam}mm "
+                    f"(ref {ref_rng[0]}-{ref_rng[1]}mm), status={status}"
+                )
 
         evidence = "\n".join(
             f"  [{i+1}] {r['title']}: {r['abstract'][:100]}..."
             for i, r in enumerate(rag_results[:2])
         )
 
-        anomaly_lines = "\n".join(
-            f"  {a['type']}: confidence={a['confidence']:.2f}"
-            for a in anomalies
-        ) or "  None flagged"
+        sections = [f"CLINICAL NOTES: {clinical_notes}\n"]
 
-        return f"""CLINICAL NOTES: {clinical_notes}
+        if warnings:
+            sections.append("SEGMENTATION QUALITY WARNINGS (do not use for clinical assessment):")
+            sections.extend(warnings)
+            sections.append("")
 
-DETECTED ORGANS ({len(organs)} organs on this slice):
-{organ_lines}
+        sections.append(f"DETECTED ORGANS ({len(organ_lines)} with usable measurements):")
+        sections.extend(organ_lines)
 
-FLAGGED ANOMALIES:
-{anomaly_lines}
+        if anomalies:
+            sections.append("\nLOW CONFIDENCE FLAGS:")
+            for a in anomalies:
+                sections.append(f"  {a['type']}: conf={a['confidence']:.2f}")
 
-RETRIEVED EVIDENCE:
-{evidence}
+        sections.append(f"\nRELEVANT LITERATURE:\n{evidence}")
+        sections.append(
+            "\nIMPORTANT: This is a single 2D axial slice. "
+            "Do not infer diagnoses. Describe observations only."
+        )
 
-NOTE: This is a single 2D axial CT slice. Volume measurements require full DICOM series.
-Coverage percentages reflect the organ's footprint on this one slice only.
-
-Write a structured diagnostic report."""
+        return "\n".join(sections)
 
     def _fallback(self, normals, seg_output, error):
-        lines = [f"**Agent unavailable ({error[:50]})**\n\n**Automated Findings:**\n"]
+        lines = [
+            f"Agent unavailable ({error[:50]})\n",
+            "**Automated Observations:**\n"
+        ]
         for organ, data in normals.items():
-            lines.append(f"- {organ}: {data.get('status','unknown')}")
-        lines.append("\nDISCLAIMER: Research prototype. Not for clinical use.")
+            status = data.get("status", "unknown")
+            if status == "SEGMENTATION_WARNING":
+                lines.append(f"- {organ}: SEGMENTATION WARNING — measurement unreliable")
+            else:
+                lines.append(f"- {organ}: {status}")
+        lines.append(
+            "\nDISCLAIMER: Research prototype. "
+            "Not for clinical use. Expert radiologist review required."
+        )
         return "\n".join(lines)
