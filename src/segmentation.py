@@ -71,6 +71,7 @@ class SegmentationModel:
             encoder_weights=None,
             in_channels=3,
             classes=9,
+            decoder_attention_type="scse",  # v3 trained with SCSE attention
         ).to(self.device)
 
         ckpt = Path(checkpoint)
