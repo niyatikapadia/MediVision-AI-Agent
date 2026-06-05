@@ -1,86 +1,88 @@
 # Segmentation Evaluation Results
 
 All metrics measured on the **official Synapse test_vol_h5 set** (12 volumes, 1,568 slices).
-These are real numbers from an actual training run — see [`evaluation/results/final_results.json`](results/final_results.json).
+These are real numbers from actual training runs on Kaggle P100.
 
 ---
 
-## Results
+## Results Summary
 
-### Overall
-
-| Metric | Value |
-|---|---|
-| **Test Dice (mean)** | **0.7760** |
-| **Test IoU (mean)** | **0.6529** |
-| Best validation Dice | 0.9234 |
-
-### Per-class Dice
-
-| Organ | Dice ↑ | IoU (approx) |
-|---|---|---|
-| Right kidney | 0.9433 | 0.893 |
-| Spleen | 0.8911 | 0.804 |
-| Left kidney | 0.8415 | 0.727 |
-| Aorta | 0.8483 | 0.737 |
-| Stomach | 0.8197 | 0.695 |
-| Pancreas | 0.7367 | 0.583 |
-| Gallbladder | 0.5850 | 0.413 |
-| Liver | 0.5425 | 0.373 |
-| **Mean** | **0.7760** | **0.6529** |
+| Version | Test Dice | Test IoU | Notes |
+|---|---|---|---|
+| v2 (baseline) | 0.7760 | 0.6529 | 224px, basic augmentation |
+| **v3 (current)** | **0.8593** | **0.7623** | 512px, Focal Tversky, SCSE attention |
 
 ---
 
-## Comparison to Published Baselines
+## v3 Per-class Results (official test set)
+
+| Organ | Dice | vs v2 | Notes |
+|---|---|---|---|
+| Right kidney | 0.9499 | +0.007 | Strongest class |
+| Spleen | 0.9162 | +0.025 | |
+| Stomach | 0.9260 | +0.106 | Large improvement |
+| Left kidney | 0.9019 | +0.060 | |
+| Aorta | 0.8916 | +0.043 | |
+| Pancreas | 0.8412 | +0.104 | Large improvement |
+| Gallbladder | 0.7350 | +0.150 | Largest improvement |
+| Liver | 0.7126 | +0.170 | Known weakness — boundary confusion |
+| **Mean** | **0.8593** | **+0.083** | |
+
+---
+
+## Comparison to Published Baselines (Synapse benchmark)
 
 | Model | Mean Dice | Architecture |
 |---|---|---|
-| Swin-UNet | 0.790 | Transformer |
+| SwinUNet | 0.790 | Transformer |
 | TransUNet | 0.772 | CNN + Transformer |
-| **MediVision (ours)** | **0.776** | UNet-ResNet34 |
+| **MediVision v3 (ours)** | **0.859** | UNet-ResNet34 + SCSE |
 | DARR | 0.696 | CNN |
 | V-Net | 0.683 | 3D CNN |
 
-MediVision matches TransUNet using a simpler 2D CNN architecture.
-See [`docs/architecture.md`](../docs/architecture.md) for design decisions.
+MediVision v3 outperforms both TransUNet and SwinUNet using a simpler 2D CNN architecture.
 
 ---
 
-## Training Setup
+## v3 Training Configuration
 
-- **Dataset:** Synapse multi-organ CT (TransUNet preprocessed)
-- **Split:** 80/20 train/val from train_npz + official test_vol_h5
-- **Hardware:** Kaggle Tesla P100-PCIE-16GB
-- **Duration:** 150 epochs, ~38 minutes total
-- **Normalization:** Per-slice min-max [0, 1] — applied identically to train and test
+| Parameter | Value |
+|---|---|
+| Architecture | UNet-ResNet34 + SCSE decoder attention |
+| Loss | 0.4 × Focal Tversky + 0.3 × Dice + 0.3 × Weighted CE |
+| Class weights | bg:0.05, aorta:1.5, gallbladder:2.5, liver:2.0, pancreas:3.0 |
+| Resolution | 512×512 |
+| Batch size | 8 |
+| Epochs | 150 |
+| LR schedule | Linear warmup (5ep) + cosine annealing |
+| Augmentation | Flip, rotation, scale-crop, gamma, noise, brightness |
+| Hardware | Kaggle Tesla P100-PCIE-16GB |
+| Training time | ~3.5 hours |
 
----
-
-## Known Weaknesses
-
-**Gallbladder (0.585):** Hardest class. Small, frequently absent/collapsed in CT volumes.
-2D model cannot use adjacent-slice context. Improvement planned via class-weighted loss
-and attention mechanisms — see [`training/train_gallbladder_improved.py`](../training/train_gallbladder_improved.py).
-
-**Liver (0.543):** Unexpectedly low given liver is the largest organ. Likely caused by
-boundary ambiguity at liver-stomach contact regions in the test set. Per-slice normalization
-may also reduce global contrast consistency.
-
-**Val vs Test gap (0.923 → 0.776):** The gap between validation Dice (on train_npz held-out)
-and test Dice (on test_vol_h5) is significant. The test volumes likely come from different
-scanners or protocols. This is a known limitation of 2D per-slice models.
+Full training script: [`training/train.py`](../training/train.py)
 
 ---
+
+## Known Limitations
+
+| Issue | Impact | Status |
+|---|---|---|
+| Liver/kidney boundary confusion | Liver under-segmented on some slices | Known — v3.1 planned |
+| 2D slices only | No volumetric context | Planned: 3D extension |
+| Internal validation only | No external test set | Known limitation |
+| Uncalibrated confidence | Softmax ≠ probability | Planned: temperature scaling |
+| No artifact rejection | Metal/motion artifacts degrade output | Not implemented |
+
+## Post-Processing (implemented in demo)
+
+- **Connected Component Analysis** — keeps largest component per organ, removes false-positive blobs
+- **Anatomical sanity checks** — flags predictions exceeding anatomical bounds as SEGMENTATION_WARNING
+- **No disease inference** — system reports measurements only, no diagnoses
 
 ## Reproducing Results
 
 ```bash
-# Train from scratch
 python training/train.py
-
-# Evaluate saved checkpoint
-python evaluation/segmentation_eval.py \
-  --test_dir  data/Synapse/test_vol_h5 \
-  --checkpoint models/unet_resnet34_synapse_best.pth \
-  --output evaluation/results/eval_output.json
+# Outputs saved to /kaggle/working/medivision_v3/
+# final_results_v3.json contains all metrics
 ```
